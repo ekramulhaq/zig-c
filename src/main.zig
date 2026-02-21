@@ -46,13 +46,25 @@ pub fn main() !void {
     defer tokens.deinit();
 
     while (true) {
-        const token = lex.nextToken();
+        const token = lex.nextToken() catch |err| {
+            if (err == error.InvalidCharacter) {
+                std.debug.print("Lexer Error: Invalid character at line {}, col {}\n", .{ lex.line, lex.col });
+                std.process.exit(1);
+            }
+            return err;
+        };
         try tokens.append(token);
         if (token.type == .EOF) break;
     }
 
     var par = Parser.init(try tokens.toOwnedSlice(), allocator);
-    const ast = try par.parseProgram();
+    const ast = par.parseProgram() catch |err| {
+        if (err == error.ParseError or err == error.UnexpectedToken or err == error.UnexpectedEOF) {
+            // Error message already printed by parser
+            std.process.exit(1);
+        }
+        return err;
+    };
 
     var opt = Optimizer.init(allocator);
     opt.optimize(ast);
@@ -60,5 +72,8 @@ pub fn main() !void {
     const file = try std.fs.cwd().createFile("out.asm", .{});
     defer file.close();
     var cg = CodeGen.init(file.writer(), allocator, arch);
-    try cg.genProgram(ast);
+    cg.genProgram(ast) catch |err| {
+        std.debug.print("CodeGen Error: {}\n", .{err});
+        std.process.exit(1);
+    };
 }

@@ -22,6 +22,8 @@ pub const NodeType = enum {
     String,
     ArrayDecl,
     Index,
+    StructDecl,
+    MemberAccess,
 };
 
 /// Represents a node in the Abstract Syntax Tree.
@@ -41,4 +43,5 @@ pub const Node = struct {
     params: ?[][]const u8 = null,
     data: ?[]const u8 = null, // For string literals
     init_value: ?i64 = null, // For global initializers
+    members: ?[]*Node = null, // For struct definitions
 };

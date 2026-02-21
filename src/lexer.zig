@@ -37,6 +37,7 @@ pub const TokenType = enum {
     ElseKeyword,
     WhileKeyword,
     ForKeyword,
+    StructKeyword,
     LParen,
     RParen,
     LBrace,
@@ -47,6 +48,8 @@ pub const TokenType = enum {
     MinusMinus,
     LBracket,
     RBracket,
+    Dot,
+    Arrow,
     EOF,
 };
 
@@ -54,176 +57,216 @@ pub const TokenType = enum {
 pub const Token = struct {
     type: TokenType,
     value: []const u8,
+    line: usize,
+    col: usize,
+};
+
+pub const LexerError = error{
+    InvalidCharacter,
 };
 
 /// Lexer converts source code into a stream of tokens.
 pub const Lexer = struct {
     source: []const u8,
     pos: usize,
+    line: usize,
+    col: usize,
 
     /// Initializes a new Lexer with the given source code.
     pub fn init(source: []const u8) Lexer {
-        return Lexer{ .source = source, .pos = 0 };
+        return Lexer{ .source = source, .pos = 0, .line = 1, .col = 1 };
+    }
+
+    fn advance(self: *Lexer) u8 {
+        const c = self.source[self.pos];
+        self.pos += 1;
+        if (c == '\n') {
+            self.line += 1;
+            self.col = 1;
+        } else {
+            self.col += 1;
+        }
+        return c;
+    }
+
+    fn peek(self: *Lexer) ?u8 {
+        if (self.pos >= self.source.len) return null;
+        return self.source[self.pos];
     }
 
     /// Returns the next token from the source code.
-    pub fn nextToken(self: *Lexer) Token {
+    pub fn nextToken(self: *Lexer) LexerError!Token {
         while (self.pos < self.source.len) {
-            if (std.ascii.isWhitespace(self.source[self.pos])) {
-                self.pos += 1;
+            const c = self.peek() orelse break;
+            if (std.ascii.isWhitespace(c)) {
+                _ = self.advance();
                 continue;
             }
             // Skip comments
             if (self.pos + 1 < self.source.len and self.source[self.pos] == '/' and self.source[self.pos + 1] == '/') {
-                self.pos += 2;
-                while (self.pos < self.source.len and self.source[self.pos] != '\n') {
-                    self.pos += 1;
+                _ = self.advance(); // /
+                _ = self.advance(); // /
+                while (self.pos < self.source.len and self.peek() != '\n') {
+                    _ = self.advance();
                 }
                 continue;
             }
             break;
         }
+
+        const start_line = self.line;
+        const start_col = self.col;
+
         if (self.pos >= self.source.len) {
-            return Token{ .type = .EOF, .value = "" };
+            return Token{ .type = .EOF, .value = "", .line = start_line, .col = start_col };
         }
-        const c = self.source[self.pos];
-        self.pos += 1;
+
+        const c = self.advance();
         switch (c) {
             '+' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .PlusEqual, .value = "+=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .PlusEqual, .value = "+=", .line = start_line, .col = start_col };
                 }
-                if (self.pos < self.source.len and self.source[self.pos] == '+') {
-                    self.pos += 1;
-                    return Token{ .type = .PlusPlus, .value = "++" };
+                if (self.peek() == '+') {
+                    _ = self.advance();
+                    return Token{ .type = .PlusPlus, .value = "++", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Plus, .value = "+" };
+                return Token{ .type = .Plus, .value = "+", .line = start_line, .col = start_col };
             },
             '-' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .MinusEqual, .value = "-=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .MinusEqual, .value = "-=", .line = start_line, .col = start_col };
                 }
-                if (self.pos < self.source.len and self.source[self.pos] == '-') {
-                    self.pos += 1;
-                    return Token{ .type = .MinusMinus, .value = "--" };
+                if (self.peek() == '-') {
+                    _ = self.advance();
+                    return Token{ .type = .MinusMinus, .value = "--", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Minus, .value = "-" };
+                if (self.peek() == '>') {
+                    _ = self.advance();
+                    return Token{ .type = .Arrow, .value = "->", .line = start_line, .col = start_col };
+                }
+                return Token{ .type = .Minus, .value = "-", .line = start_line, .col = start_col };
             },
             '*' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .StarEqual, .value = "*=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .StarEqual, .value = "*=", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Star, .value = "*" };
+                return Token{ .type = .Star, .value = "*", .line = start_line, .col = start_col };
             },
             '/' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .SlashEqual, .value = "/=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .SlashEqual, .value = "/=", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Slash, .value = "/" };
+                return Token{ .type = .Slash, .value = "/", .line = start_line, .col = start_col };
             },
             '%' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .PercentEqual, .value = "%=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .PercentEqual, .value = "%=", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Percent, .value = "%" };
+                return Token{ .type = .Percent, .value = "%", .line = start_line, .col = start_col };
             },
             '&' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '&') {
-                    self.pos += 1;
-                    return Token{ .type = .AmpersandAmpersand, .value = "&&" };
+                if (self.peek() == '&') {
+                    _ = self.advance();
+                    return Token{ .type = .AmpersandAmpersand, .value = "&&", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Ampersand, .value = "&" };
+                return Token{ .type = .Ampersand, .value = "&", .line = start_line, .col = start_col };
             },
             '|' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '|') {
-                    self.pos += 1;
-                    return Token{ .type = .PipePipe, .value = "||" };
+                if (self.peek() == '|') {
+                    _ = self.advance();
+                    return Token{ .type = .PipePipe, .value = "||", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Pipe, .value = "|" };
+                return Token{ .type = .Pipe, .value = "|", .line = start_line, .col = start_col };
             },
-            '^' => return Token{ .type = .Caret, .value = "^" },
-            '~' => return Token{ .type = .Tilde, .value = "~" },
+            '^' => return Token{ .type = .Caret, .value = "^", .line = start_line, .col = start_col },
+            '~' => return Token{ .type = .Tilde, .value = "~", .line = start_line, .col = start_col },
             '>' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .GreaterEqual, .value = ">=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .GreaterEqual, .value = ">=", .line = start_line, .col = start_col };
                 }
-                if (self.pos < self.source.len and self.source[self.pos] == '>') {
-                    self.pos += 1;
-                    return Token{ .type = .GreaterGreater, .value = ">>" };
+                if (self.peek() == '>') {
+                    _ = self.advance();
+                    return Token{ .type = .GreaterGreater, .value = ">>", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Greater, .value = ">" };
+                return Token{ .type = .Greater, .value = ">", .line = start_line, .col = start_col };
             },
             '<' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .LessEqual, .value = "<=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .LessEqual, .value = "<=", .line = start_line, .col = start_col };
                 }
-                if (self.pos < self.source.len and self.source[self.pos] == '<') {
-                    self.pos += 1;
-                    return Token{ .type = .LessLess, .value = "<<" };
+                if (self.peek() == '<') {
+                    _ = self.advance();
+                    return Token{ .type = .LessLess, .value = "<<", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Less, .value = "<" };
+                return Token{ .type = .Less, .value = "<", .line = start_line, .col = start_col };
             },
-            ';' => return Token{ .type = .Semicolon, .value = ";" },
+            ';' => return Token{ .type = .Semicolon, .value = ";", .line = start_line, .col = start_col },
             '=' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .EqualEqual, .value = "==" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .EqualEqual, .value = "==", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Equal, .value = "=" };
+                return Token{ .type = .Equal, .value = "=", .line = start_line, .col = start_col };
             },
             '!' => {
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return Token{ .type = .NotEqual, .value = "!=" };
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .NotEqual, .value = "!=", .line = start_line, .col = start_col };
                 }
-                return Token{ .type = .Bang, .value = "!" };
+                return Token{ .type = .Bang, .value = "!", .line = start_line, .col = start_col };
             },
-            '(' => return Token{ .type = .LParen, .value = "(" },
-            ')' => return Token{ .type = .RParen, .value = ")" },
-            '{' => return Token{ .type = .LBrace, .value = "{" },
-            '}' => return Token{ .type = .RBrace, .value = "}" },
-            ',' => return Token{ .type = .Comma, .value = "," },
-            '[' => return Token{ .type = .LBracket, .value = "[" },
-            ']' => return Token{ .type = .RBracket, .value = "]" },
+            '(' => return Token{ .type = .LParen, .value = "(", .line = start_line, .col = start_col },
+            ')' => return Token{ .type = .RParen, .value = ")", .line = start_line, .col = start_col },
+            '{' => return Token{ .type = .LBrace, .value = "{", .line = start_line, .col = start_col },
+            '}' => return Token{ .type = .RBrace, .value = "}", .line = start_line, .col = start_col },
+            ',' => return Token{ .type = .Comma, .value = ",", .line = start_line, .col = start_col },
+            '[' => return Token{ .type = .LBracket, .value = "[", .line = start_line, .col = start_col },
+            ']' => return Token{ .type = .RBracket, .value = "]", .line = start_line, .col = start_col },
+            '.' => return Token{ .type = .Dot, .value = ".", .line = start_line, .col = start_col },
             '"' => {
-                const start = self.pos;
-                while (self.pos < self.source.len and self.source[self.pos] != '"') {
-                    self.pos += 1;
+                const start_pos = self.pos;
+                while (self.peek()) |pc| {
+                    if (pc == '"') break;
+                    _ = self.advance();
                 }
-                const value = self.source[start..self.pos];
-                if (self.pos < self.source.len) self.pos += 1; // skip closing quote
-                return Token{ .type = .StringLiteral, .value = value };
+                const value = self.source[start_pos..self.pos];
+                if (self.peek() == '"') _ = self.advance(); // skip closing quote
+                return Token{ .type = .StringLiteral, .value = value, .line = start_line, .col = start_col };
             },
             else => {
                 if (std.ascii.isDigit(c)) {
-                    const start = self.pos - 1;
-                    while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
-                        self.pos += 1;
+                    const start_pos = self.pos - 1;
+                    while (self.peek()) |pc| {
+                        if (!std.ascii.isDigit(pc)) break;
+                        _ = self.advance();
                     }
-                    return Token{ .type = .Number, .value = self.source[start..self.pos] };
+                    return Token{ .type = .Number, .value = self.source[start_pos..self.pos], .line = start_line, .col = start_col };
                 }
                 if (std.ascii.isAlphabetic(c)) {
-                    const start = self.pos - 1;
-                    while (self.pos < self.source.len and (std.ascii.isAlphanumeric(self.source[self.pos]) or self.source[self.pos] == '_')) {
-                        self.pos += 1;
+                    const start_pos = self.pos - 1;
+                    while (self.peek()) |pc| {
+                        if (!std.ascii.isAlphanumeric(pc) and pc != '_') break;
+                        _ = self.advance();
                     }
-                    const value = self.source[start..self.pos];
-                    if (std.mem.eql(u8, value, "int")) return Token{ .type = .IntKeyword, .value = value };
-                    if (std.mem.eql(u8, value, "return")) return Token{ .type = .ReturnKeyword, .value = value };
-                    if (std.mem.eql(u8, value, "if")) return Token{ .type = .IfKeyword, .value = value };
-                    if (std.mem.eql(u8, value, "else")) return Token{ .type = .ElseKeyword, .value = value };
-                    if (std.mem.eql(u8, value, "while")) return Token{ .type = .WhileKeyword, .value = value };
-                    if (std.mem.eql(u8, value, "for")) return Token{ .type = .ForKeyword, .value = value };
-                    return Token{ .type = .Identifier, .value = value };
+                    const value = self.source[start_pos..self.pos];
+                    if (std.mem.eql(u8, value, "int")) return Token{ .type = .IntKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "return")) return Token{ .type = .ReturnKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "if")) return Token{ .type = .IfKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "else")) return Token{ .type = .ElseKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "while")) return Token{ .type = .WhileKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "for")) return Token{ .type = .ForKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "struct")) return Token{ .type = .StructKeyword, .value = value, .line = start_line, .col = start_col };
+                    return Token{ .type = .Identifier, .value = value, .line = start_line, .col = start_col };
                 }
-                @panic("Invalid character");
+                return error.InvalidCharacter;
             },
         }
     }

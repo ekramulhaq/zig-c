@@ -64,6 +64,7 @@ EXAMPLES=(
     "examples/complex.simple:42"
     "examples/optimize.simple:51"
     "examples/sieve.simple:100"
+    "examples/structs.simple:42"
 )
 
 TOTAL_PASS=0

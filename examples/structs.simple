@@ -1,0 +1,18 @@
+struct Point {
+    int x;
+    int y;
+};
+
+int main() {
+    struct Point p;
+    p.x = 10;
+    p.y = 20;
+    
+    struct Point *ptr = &p;
+    ptr->x += 32; // p.x becomes 42
+    
+    if (p.x == 42 && p.y == 20) {
+        return p.x; // 42
+    }
+    return 0;
+}
