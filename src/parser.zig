@@ -264,8 +264,21 @@ pub const Parser = struct {
                 node.* = Node{ .type = .AddressOf, .right = right };
                 return node;
             }
+            if (token.type == .SizeofKeyword) {
+                return self.parseSizeof();
+            }
         }
         return try self.parsePostfix();
+    }
+
+    fn parseSizeof(self: *Parser) anyerror!*Node {
+        try self.expect(.SizeofKeyword, "Expected 'sizeof'");
+        try self.expect(.LParen, "Expected ( after sizeof");
+        const t = try self.parseType();
+        try self.expect(.RParen, "Expected ) after sizeof type");
+        const node = try self.allocator.create(Node);
+        node.* = Node{ .type = .Sizeof, .data_type = t.id, .struct_name = t.struct_name };
+        return node;
     }
 
     fn parsePostfix(self: *Parser) anyerror!*Node {
@@ -321,6 +334,10 @@ pub const Parser = struct {
         } else if (token.type == .VoidKeyword) {
             self.advance();
             return .{ .id = .Void };
+        } else if (token.type == .StructKeyword) {
+            self.advance();
+            const name = try self.expectIdentifier("Expected struct name");
+            return .{ .id = .Int, .struct_name = name }; // base id doesn't matter for struct
         } else if (token.type == .Identifier) {
             if (self.type_system.typedefs.get(token.value)) |t| {
                 self.advance();
@@ -461,38 +478,45 @@ pub const Parser = struct {
                 }
             }
             
-            var pointer_level: usize = 0;
-            while (self.consume(.Star)) { pointer_level += 1; }
-            const is_pointer = (pointer_level > 0);
+            var decls = std.ArrayList(*Node).init(self.allocator);
+            while (true) {
+                var pointer_level: usize = 0;
+                while (self.consume(.Star)) { pointer_level += 1; }
+                const is_pointer = (pointer_level > 0);
 
-            const ident = self.current() orelse return self.errorAt(token, "Expected identifier");
-            if (ident.type != .Identifier) return self.errorAt(ident, "Expected identifier");
-            self.advance();
-            
-            if (self.consume(.LBracket)) {
-                const size_node = try self.parseExpr();
-                if (size_node.type != .Number) return self.errorAt(ident, "Array size must be a constant number");
-                try self.expect(.RBracket, "Expected ] after array size");
-                try self.expect(.Semicolon, "Expected ; after array declaration");
-                const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                return node;
-            }
-            
-            if (self.consume(.Equal)) {
-                const expr = try self.parseExpr();
-                try self.expect(.Semicolon, "Expected ; after variable declaration");
-                const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                if (expr.type == .Number) {
-                    node.init_value = expr.value;
+                const ident = self.current() orelse return self.errorAt(token, "Expected identifier");
+                if (ident.type != .Identifier) return self.errorAt(ident, "Expected identifier");
+                self.advance();
+                
+                var node: *Node = undefined;
+                if (self.consume(.LBracket)) {
+                    const size_node = try self.parseExpr();
+                    if (size_node.type != .Number) return self.errorAt(ident, "Array size must be a constant number");
+                    try self.expect(.RBracket, "Expected ] after array size");
+                    node = try self.allocator.create(Node);
+                    node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
+                } else if (self.consume(.Equal)) {
+                    const expr = try self.parseExpr();
+                    node = try self.allocator.create(Node);
+                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
+                    if (expr.type == .Number) {
+                        node.init_value = expr.value;
+                    }
+                } else {
+                    node = try self.allocator.create(Node);
+                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
                 }
-                return node;
+                try decls.append(node);
+
+                if (!self.consume(.Comma)) break;
+            }
+            try self.expect(.Semicolon, "Expected ; after declaration(s)");
+
+            if (decls.items.len == 1) {
+                return decls.items[0];
             } else {
-                try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                // If it's a struct, we should probably mark it. For now, our compiler treats all vars as 8 bytes.
+                node.* = Node{ .type = .Compound, .body = try decls.toOwnedSlice() };
                 return node;
             }
         } else if (token.type == .ReturnKeyword) {

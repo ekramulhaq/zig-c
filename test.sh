@@ -83,6 +83,8 @@ EXAMPLES=(
     "examples/binary_search.simple:42"
     "examples/linked_list.simple:42"
     "examples/bit_counting.simple:42"
+    "examples/multi_decl.simple:42"
+    "examples/sizeof.simple:42"
 )
 
 TOTAL_PASS=0

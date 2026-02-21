@@ -45,6 +45,7 @@ pub const TokenType = enum {
     SwitchKeyword,
     CaseKeyword,
     DefaultKeyword,
+    SizeofKeyword,
     StructKeyword,
     EnumKeyword,
     TypedefKeyword,
@@ -320,6 +321,7 @@ pub const Lexer = struct {
                     if (std.mem.eql(u8, value, "switch")) return Token{ .type = .SwitchKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "case")) return Token{ .type = .CaseKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "default")) return Token{ .type = .DefaultKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "sizeof")) return Token{ .type = .SizeofKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "struct")) return Token{ .type = .StructKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "enum")) return Token{ .type = .EnumKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "typedef")) return Token{ .type = .TypedefKeyword, .value = value, .line = start_line, .col = start_col };

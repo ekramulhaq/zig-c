@@ -53,10 +53,12 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 - **Comparison**: `==, !=, >, <, >=, <=`.
 - **Logical**: `&&, ||, !`.
 - **Ternary**: `cond ? then : else`.
+- **Unary**: `sizeof(type)`, `&` (address-of), `*` (dereference).
 - **Assignment**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=`).
-- **Memory**: `&` (address-of), `*` (dereference), `->` (arrow access), `.` (dot access).
+- **Memory**: `->` (arrow access), `.` (dot access).
 
-### Functions
+### Functions and Declarations
+- Multiple variable declarations in a single line (e.g., `int a, b = 10, *c;`).
 - Support for multiple parameters and local variable declarations.
 - Recursive function calls are fully supported.
 - External function calling (e.g., `printf`, `exit`, `malloc`).

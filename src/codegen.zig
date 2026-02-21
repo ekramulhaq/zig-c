@@ -253,6 +253,14 @@ pub const CodeGen = struct {
                     try self.writer.print("    leaq L_.str.{}(%rip), %rax\n", .{idx});
                 }
             },
+            .Sizeof => {
+                const size = self.type_system.getTypeSize(node.data_type, false, node.struct_name);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    mov x0, #{}\n", .{size});
+                } else {
+                    try self.writer.print("    movq ${}, %rax\n", .{size});
+                }
+            },
             .AddressOf => {
                 try self.genAddr(node.right.?);
             },
@@ -714,6 +722,11 @@ pub const CodeGen = struct {
                     if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{label}); } else { try self.writer.print("    jmp {s}\n", .{label}); }
                 } else @panic("continue outside of loop");
             },
+            .Compound => {
+                for (node.body.?) |stmt| {
+                    try self.genStmt(stmt);
+                }
+            },
             .Switch => {
                 const end_label = self.newLabel();
                 const old_break = self.break_label;
@@ -812,17 +825,25 @@ pub const CodeGen = struct {
         }
     }
 
+    fn registerGlobal(self: *CodeGen, node: *Node) !void {
+        if (node.type == .VarDecl) {
+            const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+            try self.globals.put(node.name.?, .{ .size = size, .init_value = node.init_value, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
+        } else if (node.type == .ArrayDecl) {
+            const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+            try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * element_size), .init_value = null, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
+        } else if (node.type == .Compound) {
+            for (node.body.?) |stmt| {
+                try self.registerGlobal(stmt);
+            }
+        }
+    }
+
     /// Generates code for the entire program.
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
         // Second pass: globals
         for (nodes) |node| {
-            if (node.type == .VarDecl) {
-                const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-                try self.globals.put(node.name.?, .{ .size = size, .init_value = node.init_value, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
-            } else if (node.type == .ArrayDecl) {
-                const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * element_size), .init_value = null, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
-            }
+            try self.registerGlobal(node);
         }
         try self.writer.print(".text\n", .{});
         for (nodes) |node| {

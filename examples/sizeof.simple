@@ -1,0 +1,15 @@
+struct Node {
+    int a;
+    int b;
+};
+
+int main() {
+    int s1 = sizeof(int);  // 8
+    int s2 = sizeof(char); // 8 (padded in this compiler)
+    int s3 = sizeof(struct Node); // 16
+    
+    if (s1 == 8 && s2 == 8 && s3 == 16) {
+        return 42;
+    }
+    return s3;
+}

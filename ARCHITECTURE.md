@@ -33,7 +33,8 @@ graph LR
 - **Features**:
     - Implements C-standard operator precedence (13 levels).
     - Handles complex control flow (nested loops, `if/else`, `do-while`, `switch/case`).
-    - Supports ternary operator (`? :`) and postfix operations (`++`, `--`).
+    - Supports ternary operator (`? :`), postfix operations (`++`, `--`), and `sizeof(type)`.
+    - Supports multiple variable declarations in a single statement (`int a, b, *c;`).
     - Manages `typedef` and `enum` symbol tables during the parse phase for immediate substitution.
     - Context-aware lookahead for differentiating between function definitions and global variable declarations.
 
