@@ -1,0 +1,223 @@
+// ────────────────────────────────────────────────────────────────────────────
+//  gauntlet.simple  –  comprehensive compiler stress-test
+//  Expected exit code: 42
+//  Tests: recursion, iteration, float math, bit ops, sorting, gcd, structs
+// ────────────────────────────────────────────────────────────────────────────
+
+// ── Global state ─────────────────────────────────────────────────────────────
+int g_call_count = 0;
+
+// ── Global array shared by sort functions (avoids array-decay limitation) ────
+int g_data[8];
+
+// ── 1. Fibonacci (recursive) ──────────────────────────────────────────────────
+int fib(int n) {
+    g_call_count = g_call_count + 1;
+    if (n <= 1) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+// ── 2. Fibonacci (iterative) ──────────────────────────────────────────────────
+int fib_iter(int n) {
+    if (n <= 1) return n;
+    int a = 0;
+    int b = 1;
+    int i = 2;
+    while (i <= n) {
+        int tmp = a + b;
+        a = b;
+        b = tmp;
+        i = i + 1;
+    }
+    return b;
+}
+
+// ── 3. Quicksort (operates on g_data) ────────────────────────────────────────
+int qs_partition(int lo, int hi) {
+    int pivot = g_data[hi];
+    int i = lo - 1;
+    int j = lo;
+    while (j < hi) {
+        if (g_data[j] <= pivot) {
+            i = i + 1;
+            int tmp = g_data[i];
+            g_data[i] = g_data[j];
+            g_data[j] = tmp;
+        }
+        j = j + 1;
+    }
+    int tmp2 = g_data[i + 1];
+    g_data[i + 1] = g_data[hi];
+    g_data[hi] = tmp2;
+    return i + 1;
+}
+
+void qs(int lo, int hi) {
+    if (lo < hi) {
+        int p = qs_partition(lo, hi);
+        qs(lo, p - 1);
+        qs(p + 1, hi);
+    }
+}
+
+// ── 4. Bit popcount ───────────────────────────────────────────────────────────
+int popcount(int x) {
+    int cnt = 0;
+    while (x != 0) {
+        cnt = cnt + (x & 1);
+        x = x >> 1;
+    }
+    return cnt;
+}
+
+// ── 5. GCD (iterative Euclidean) ──────────────────────────────────────────────
+int gcd(int a, int b) {
+    while (b != 0) {
+        int t = b;
+        b = a - (a / b) * b;
+        a = t;
+    }
+    return a;
+}
+
+// ── 6. Float square root (Newton-Raphson, 20 iterations) ─────────────────────
+double my_sqrt(double n) {
+    if (n <= 0.0) return 0.0;
+    double x = n;
+    int i = 0;
+    while (i < 20) {
+        x = (x + n / x) * 0.5;
+        i = i + 1;
+    }
+    return x;
+}
+
+// ── 7. Float polynomial: p(x) = 2x^2 - 3x + 1  evaluated at x=2.5 ───────────
+//   p(2.5) = 2*6.25 - 3*2.5 + 1 = 12.5 - 7.5 + 1 = 6.0
+double poly(double x) {
+    return 2.0 * x * x - 3.0 * x + 1.0;
+}
+
+// ── 8. Struct tests ───────────────────────────────────────────────────────────
+struct Point {
+    int x;
+    int y;
+};
+
+struct Point g_p1;
+struct Point g_p2;
+
+int manhattan(int ax, int ay) {
+    if (ax < 0) ax = -ax;
+    if (ay < 0) ay = -ay;
+    return ax + ay;
+}
+
+// ── main ─────────────────────────────────────────────────────────────────────
+int main() {
+    int score = 0;
+
+    // ── Test 1: Recursive vs iterative Fibonacci match ────────────────────────
+    int f10_r = fib(10);      // 55
+    int f10_i = fib_iter(10); // 55
+    if (f10_r != 55) return 1;
+    if (f10_i != 55) return 2;
+    if (f10_r != f10_i) return 3;
+    score = score + 1;   // score = 1
+
+    // ── Test 2: Global call counter (recursion touched it) ────────────────────
+    if (g_call_count <= 0) return 4;
+    score = score + 1;   // score = 2
+
+    // ── Test 3: Quicksort on global array ────────────────────────────────────
+    g_data[0] = 9;
+    g_data[1] = 3;
+    g_data[2] = 7;
+    g_data[3] = 1;
+    g_data[4] = 5;
+    g_data[5] = 8;
+    g_data[6] = 2;
+    g_data[7] = 6;
+    qs(0, 7);
+    if (g_data[0] != 1) return 5;
+    if (g_data[1] != 2) return 6;
+    if (g_data[2] != 3) return 7;
+    if (g_data[3] != 5) return 8;
+    if (g_data[4] != 6) return 9;
+    if (g_data[5] != 7) return 10;
+    if (g_data[6] != 8) return 11;
+    if (g_data[7] != 9) return 12;
+    score = score + 1;   // score = 3
+
+    // ── Test 4: Sum of sorted array ───────────────────────────────────────────
+    int total = 0;
+    int ai = 0;
+    while (ai < 8) {
+        total = total + g_data[ai];
+        ai = ai + 1;
+    }
+    if (total != 41) return 13;  // 1+2+3+5+6+7+8+9 = 41
+    score = score + 1;   // score = 4
+
+    // ── Test 5: Bit popcount ──────────────────────────────────────────────────
+    if (popcount(0)   != 0) return 14;
+    if (popcount(255) != 8) return 15;
+    if (popcount(170) != 4) return 16;  // 0b10101010
+    if (popcount(42)  != 3) return 17;  // 0b00101010
+    score = score + 1;   // score = 5
+
+    // ── Test 6: GCD ───────────────────────────────────────────────────────────
+    if (gcd(12, 8)   != 4)  return 18;
+    if (gcd(100, 75) != 25) return 19;
+    if (gcd(7, 13)   != 1)  return 20;
+    score = score + 1;   // score = 6
+
+    // ── Test 7: Float sqrt (Newton-Raphson) ───────────────────────────────────
+    double r4   = my_sqrt(4.0);    // 2.0
+    double r225 = my_sqrt(225.0);  // 15.0
+    double r0   = my_sqrt(0.0);    // 0.0
+    if (r4   < 1.99 || r4   > 2.01) return 21;
+    if (r225 < 14.99 || r225 > 15.01) return 22;
+    if (r0 != 0.0) return 23;
+    score = score + 1;   // score = 7
+
+    // ── Test 8: Float polynomial ──────────────────────────────────────────────
+    double pv = poly(2.5);   // 6.0
+    if (pv < 5.99 || pv > 6.01) return 24;
+
+    // optimizer should fold: 2.5*2.5 = 6.25 (compile-time), 3.0*2.5 = 7.5
+    double compile_fold = 1.5 + 2.5;  // → 4.0 at compile time
+    if (compile_fold < 3.99 || compile_fold > 4.01) return 25;
+    score = score + 1;   // score = 8
+
+    // ── Test 9: Struct member access ─────────────────────────────────────────
+    g_p1.x = 3;
+    g_p1.y = -4;
+    int m1 = manhattan(g_p1.x, g_p1.y);  // |3| + |-4| = 7
+    if (m1 != 7) return 26;
+
+    g_p2.x = -5;
+    g_p2.y = 5;
+    int m2 = manhattan(g_p2.x, g_p2.y);  // |-5| + |5| = 10
+    if (m2 != 10) return 27;
+    score = score + 1;   // score = 9
+
+    // ── Test 10: Optimizer: algebraic identities & strength reduction ─────────
+    int z0  = 100 * 0;        // optimizer folds to 0
+    int z1  = 0 + 77;         // optimizer: 0+77 → 77
+    int z2  = 77 * 1;         // optimizer: x*1 → x (77)
+    int z3  = 99 / 1;         // optimizer: x/1 → x (99)
+    int z4  = 3 * 8;          // strength-reduce: 3 << 3 = 24
+    int z5  = 64 / 4;         // strength-reduce: 64 >> 2 = 16
+    if (z0 != 0)  return 28;
+    if (z1 != 77) return 29;
+    if (z2 != 77) return 30;
+    if (z3 != 99) return 31;
+    if (z4 != 24) return 32;
+    if (z5 != 16) return 33;
+    score = score + 1;   // score = 10
+
+    // ── All 10 tests passed ───────────────────────────────────────────────────
+    if (score != 10) return 34;
+    return 42;
+}
