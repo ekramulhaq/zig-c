@@ -480,6 +480,25 @@ pub const CodeGen = struct {
                 }
                 try self.writer.print("{s}:\n", .{label_end});
             },
+            .Ternary => {
+                const label_else = self.newLabel();
+                const label_end = self.newLabel();
+                try self.genExpr(node.condition.?);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{label_else});
+                } else {
+                    try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{label_else});
+                }
+                try self.genExpr(node.left.?);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    b {s}\n", .{label_end});
+                } else {
+                    try self.writer.print("    jmp {s}\n", .{label_end});
+                }
+                try self.writer.print("{s}:\n", .{label_else});
+                try self.genExpr(node.right.?);
+                try self.writer.print("{s}:\n", .{label_end});
+            },
             .UnaryOp => {
                 if (node.op.? == .PlusPlus or node.op.? == .MinusMinus) {
                     try self.genAddr(node.right.?);
@@ -508,6 +527,26 @@ pub const CodeGen = struct {
                     } else if (node.op.? == .Tilde) {
                         if (self.arch == .arm64) { try self.writer.print("    mvn x0, x0\n", .{}); } else { try self.writer.print("    notq %rax\n", .{}); }
                     }
+                }
+            },
+            .PostfixOp => {
+                try self.genAddr(node.right.?);
+                try self.pushTemp(); // address
+                if (self.arch == .arm64) {
+                    try self.writer.print("    ldr x0, [x0]\n", .{});
+                    try self.pushTemp(); // original value
+                    if (node.op.? == .PlusPlus) { try self.writer.print("    add x1, x0, #1\n", .{}); } else { try self.writer.print("    sub x1, x0, #1\n", .{}); }
+                    try self.popTemp("x0"); // original value
+                    try self.popTemp("x2"); // address
+                    try self.writer.print("    str x1, [x2]\n", .{});
+                } else {
+                    try self.writer.print("    movq (%rax), %rax\n", .{});
+                    try self.pushTemp(); // original value
+                    try self.writer.print("    movq %rax, %r11\n", .{}); // original value in r11
+                    if (node.op.? == .PlusPlus) { try self.writer.print("    incq %r11\n", .{}); } else { try self.writer.print("    decq %r11\n", .{}); }
+                    try self.popTemp("%rax"); // original value
+                    try self.popTemp("%r10"); // address
+                    try self.writer.print("    movq %r11, (%r10)\n", .{});
                 }
             },
             else => @panic("Invalid expression node"),
@@ -617,6 +656,61 @@ pub const CodeGen = struct {
                 if (self.continue_label) |label| {
                     if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{label}); } else { try self.writer.print("    jmp {s}\n", .{label}); }
                 } else @panic("continue outside of loop");
+            },
+            .Switch => {
+                const end_label = self.newLabel();
+                const old_break = self.break_label;
+                self.break_label = end_label;
+
+                // Evaluate condition
+                try self.genExpr(node.condition.?);
+                try self.pushTemp(); // Condition value
+
+                var default_label: ?[]const u8 = null;
+                
+                // First pass: Generate jump table (linear search for now)
+                for (node.body.?) |stmt| {
+                    if (stmt.type == .Case) {
+                        const case_label = self.newLabel();
+                        stmt.data = case_label; // Store label in node's data field for second pass
+                        if (stmt.init_value) |val| {
+                            try self.popTemp(if (self.arch == .arm64) "x1" else "%r10");
+                            try self.pushTemp(); // push back condition
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    mov x2, #{}\n", .{val});
+                                try self.writer.print("    cmp x1, x2\n", .{});
+                                try self.writer.print("    b.eq {s}\n", .{case_label});
+                            } else {
+                                try self.writer.print("    cmpq ${}, %r10\n", .{val});
+                                try self.writer.print("    je {s}\n", .{case_label});
+                            }
+                        } else {
+                            default_label = case_label;
+                        }
+                    }
+                }
+                
+                if (default_label) |dl| {
+                    if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{dl}); } else { try self.writer.print("    jmp {s}\n", .{dl}); }
+                } else {
+                    if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{end_label}); } else { try self.writer.print("    jmp {s}\n", .{end_label}); }
+                }
+
+                // Pop the condition value from temp stack
+                self.temp_stack_pos += 8;
+
+                // Second pass: Generate code for each case
+                for (node.body.?) |stmt| {
+                    try self.genStmt(stmt);
+                }
+
+                try self.writer.print("{s}:\n", .{end_label});
+                self.break_label = old_break;
+            },
+            .Case => {
+                if (node.data) |label| {
+                    try self.writer.print("{s}:\n", .{label});
+                }
             },
             .StructDecl => {},
             else => @panic("Invalid statement node"),

@@ -5,8 +5,8 @@ A multi-pass, multi-architecture compiler for a subset of the C language, implem
 ## Features
 
 - **Language Constructs**: Integers (`int`), Characters (`char`), `void` functions, Structs, Enums, and `typedef`.
-- **Control Flow**: `if/else`, `while`, `for`, `do-while`, `break`, and `continue`.
-- **Operators**: Full suite of arithmetic, bitwise, comparison, and logical operators.
+- **Control Flow**: `if/else`, `while`, `for`, `do-while`, `switch/case`, `break`, and `continue`.
+- **Operators**: Arithmetic (prefix/postfix), bitwise, comparison, logical, and ternary (`? :`).
 - **Memory**: Support for pointers (`&`, `*`), arrays, and global variables.
 - **Architectures**: Code generation for ARM64 and x86_64 (macOS).
 - **Optimization**: Constant folding at the AST level.

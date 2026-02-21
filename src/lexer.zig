@@ -42,6 +42,9 @@ pub const TokenType = enum {
     DoKeyword,
     BreakKeyword,
     ContinueKeyword,
+    SwitchKeyword,
+    CaseKeyword,
+    DefaultKeyword,
     StructKeyword,
     EnumKeyword,
     TypedefKeyword,
@@ -57,6 +60,8 @@ pub const TokenType = enum {
     RBracket,
     Dot,
     Arrow,
+    Question,
+    Colon,
     EOF,
 };
 
@@ -247,6 +252,8 @@ pub const Lexer = struct {
             '[' => return Token{ .type = .LBracket, .value = "[", .line = start_line, .col = start_col },
             ']' => return Token{ .type = .RBracket, .value = "]", .line = start_line, .col = start_col },
             '.' => return Token{ .type = .Dot, .value = ".", .line = start_line, .col = start_col },
+            '?' => return Token{ .type = .Question, .value = "?", .line = start_line, .col = start_col },
+            ':' => return Token{ .type = .Colon, .value = ":", .line = start_line, .col = start_col },
             '\'' => {
                 var val: i64 = 0;
                 if (self.peek() == '\\') {
@@ -310,6 +317,9 @@ pub const Lexer = struct {
                     if (std.mem.eql(u8, value, "do")) return Token{ .type = .DoKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "break")) return Token{ .type = .BreakKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "continue")) return Token{ .type = .ContinueKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "switch")) return Token{ .type = .SwitchKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "case")) return Token{ .type = .CaseKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "default")) return Token{ .type = .DefaultKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "struct")) return Token{ .type = .StructKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "enum")) return Token{ .type = .EnumKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "typedef")) return Token{ .type = .TypedefKeyword, .value = value, .line = start_line, .col = start_col };

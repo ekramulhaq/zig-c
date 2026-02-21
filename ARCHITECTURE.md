@@ -32,7 +32,8 @@ graph LR
 - **Responsibility**: Consumes tokens and builds an Abstract Syntax Tree (AST).
 - **Features**:
     - Implements C-standard operator precedence (13 levels).
-    - Handles complex control flow (nested loops, `if/else`).
+    - Handles complex control flow (nested loops, `if/else`, `do-while`, `switch/case`).
+    - Supports ternary operator (`? :`) and postfix operations (`++`, `--`).
     - Manages `typedef` and `enum` symbol tables during the parse phase for immediate substitution.
     - Context-aware lookahead for differentiating between function definitions and global variable declarations.
 

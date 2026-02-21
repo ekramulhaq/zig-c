@@ -42,15 +42,17 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 - **`while`**: Condition-controlled loop.
 - **`for`**: Iteration-controlled loop.
 - **`do-while`**: Post-condition loop.
-- **`break`**: Immediate exit from the innermost loop.
+- **`switch` / `case` / `default`**: Multi-way branching with fallthrough support.
+- **`break`**: Immediate exit from the innermost loop or switch.
 - **`continue`**: Skip the rest of the current loop iteration.
 - **`return`**: Exit function with an optional value.
 
 ### Operators
-- **Arithmetic**: `+, -, *, /, %` (plus `++` and `--` for prefix operations).
+- **Arithmetic**: `+, -, *, /, %` (prefix and postfix `++` and `--`).
 - **Bitwise**: `&, |, ^, ~, <<, >>`.
 - **Comparison**: `==, !=, >, <, >=, <=`.
 - **Logical**: `&&, ||, !`.
+- **Ternary**: `cond ? then : else`.
 - **Assignment**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=`).
 - **Memory**: `&` (address-of), `*` (dereference), `->` (arrow access), `.` (dot access).
 

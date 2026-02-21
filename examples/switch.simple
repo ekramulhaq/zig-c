@@ -1,0 +1,44 @@
+int main() {
+    int x = 2;
+    int res = 0;
+    
+    switch (x) {
+        case 1:
+            res = 10;
+            break;
+        case 2:
+            res = 20;
+            break;
+        case 3:
+            res = 30;
+            break;
+        default:
+            res = 100;
+            break;
+    }
+    // res should be 20
+    int test1 = (res == 20);
+
+    // Fallthrough test
+    res = 0;
+    switch (x) {
+        case 1: res = 1; break;
+        case 2: res = 2; // fallthrough
+        case 3: res = res + 40; break;
+    }
+    // res should be 42
+    int test2 = (res == 42);
+
+    // Default test
+    res = 0;
+    switch (10) {
+        case 1: res = 1; break;
+        default: res = 42; break;
+    }
+    int test3 = (res == 42);
+
+    if (test1 && test2 && test3) {
+        return 42;
+    }
+    return 0;
+}

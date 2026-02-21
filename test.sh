@@ -76,6 +76,9 @@ EXAMPLES=(
     "examples/void_char.simple:42"
     "examples/typedef_enum.simple:42"
     "examples/nested_loops_complex.simple:42"
+    "examples/postfix.simple:42"
+    "examples/ternary.simple:42"
+    "examples/switch.simple:42"
 )
 
 TOTAL_PASS=0

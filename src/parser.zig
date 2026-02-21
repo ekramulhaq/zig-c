@@ -67,7 +67,7 @@ pub const Parser = struct {
     }
 
     fn parseExpr(self: *Parser) anyerror!*Node {
-        const left = try self.parseLogicalOr();
+        const left = try self.parseTernary();
         if (self.current()) |token| {
             switch (token.type) {
                 .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => {
@@ -88,6 +88,19 @@ pub const Parser = struct {
             }
         }
         return left;
+    }
+
+    fn parseTernary(self: *Parser) anyerror!*Node {
+        const cond = try self.parseLogicalOr();
+        if (self.consume(.Question)) {
+            const then_branch = try self.parseExpr();
+            try self.expect(.Colon, "Expected : in ternary operator");
+            const else_branch = try self.parseTernary();
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Ternary, .condition = cond, .left = then_branch, .right = else_branch };
+            return node;
+        }
+        return cond;
     }
 
     fn parseLogicalOr(self: *Parser) anyerror!*Node {
@@ -281,6 +294,11 @@ pub const Parser = struct {
                 deref.* = Node{ .type = .Deref, .right = node };
                 const new_node = try self.allocator.create(Node);
                 new_node.* = Node{ .type = .MemberAccess, .left = deref, .name = member };
+                node = new_node;
+            } else if (token.type == .PlusPlus or token.type == .MinusMinus) {
+                self.advance();
+                const new_node = try self.allocator.create(Node);
+                new_node.* = Node{ .type = .PostfixOp, .op = token.type, .right = node };
                 node = new_node;
             } else break;
         }
@@ -525,6 +543,29 @@ pub const Parser = struct {
             try self.expect(.Semicolon, "Expected ; after continue");
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .Continue };
+            return node;
+        } else if (token.type == .SwitchKeyword) {
+            self.advance();
+            try self.expect(.LParen, "Expected (");
+            const cond = try self.parseExpr();
+            try self.expect(.RParen, "Expected )");
+            const body = try self.parseBlock();
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Switch, .condition = cond, .body = body };
+            return node;
+        } else if (token.type == .CaseKeyword) {
+            self.advance();
+            const val_node = try self.parseExpr();
+            if (val_node.type != .Number) return self.errorAt(token, "Case value must be a constant number");
+            try self.expect(.Colon, "Expected : after case value");
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Case, .init_value = val_node.value };
+            return node;
+        } else if (token.type == .DefaultKeyword) {
+            self.advance();
+            try self.expect(.Colon, "Expected : after default");
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Case, .init_value = null }; // null means default
             return node;
         } else if (token.type == .ForKeyword) {
             self.advance();
