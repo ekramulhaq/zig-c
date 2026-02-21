@@ -33,12 +33,18 @@ pub const TokenType = enum {
     Bang,
     IntKeyword,
     CharKeyword,
+    VoidKeyword,
     ReturnKeyword,
     IfKeyword,
     ElseKeyword,
     WhileKeyword,
     ForKeyword,
+    DoKeyword,
+    BreakKeyword,
+    ContinueKeyword,
     StructKeyword,
+    EnumKeyword,
+    TypedefKeyword,
     LParen,
     RParen,
     LBrace,
@@ -93,6 +99,15 @@ pub const Lexer = struct {
     fn peek(self: *Lexer) ?u8 {
         if (self.pos >= self.source.len) return null;
         return self.source[self.pos];
+    }
+
+    fn expectChar(self: *Lexer, c: u8, msg: []const u8) !void {
+        if (self.peek() == c) {
+            _ = self.advance();
+        } else {
+            std.debug.print("Lexer Error at line {}, col {}: {s}\n", .{ self.line, self.col, msg });
+            return error.InvalidCharacter;
+        }
     }
 
     /// Returns the next token from the source code.
@@ -232,6 +247,32 @@ pub const Lexer = struct {
             '[' => return Token{ .type = .LBracket, .value = "[", .line = start_line, .col = start_col },
             ']' => return Token{ .type = .RBracket, .value = "]", .line = start_line, .col = start_col },
             '.' => return Token{ .type = .Dot, .value = ".", .line = start_line, .col = start_col },
+            '\'' => {
+                var val: i64 = 0;
+                if (self.peek() == '\\') {
+                    _ = self.advance();
+                    const escape = self.advance();
+                    val = switch (escape) {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '0' => 0,
+                        else => escape,
+                    };
+                } else {
+                    val = self.advance();
+                }
+                try self.expectChar('\'', "Expected ' after character literal");
+                // Convert value to string to keep Token struct consistent.
+                // Using a small buffer for numeric value
+                var buf: [32]u8 = undefined;
+                const val_str = std.fmt.bufPrint(&buf, "{}", .{val}) catch return error.InvalidCharacter;
+                // We need to duplicate the string because the buffer is local
+                const duplicated = std.heap.page_allocator.dupe(u8, val_str) catch return error.InvalidCharacter;
+                return Token{ .type = .Number, .value = duplicated, .line = start_line, .col = start_col };
+            },
             '"' => {
                 const start_pos = self.pos;
                 while (self.peek()) |pc| {
@@ -260,12 +301,18 @@ pub const Lexer = struct {
                     const value = self.source[start_pos..self.pos];
                     if (std.mem.eql(u8, value, "int")) return Token{ .type = .IntKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "char")) return Token{ .type = .CharKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "void")) return Token{ .type = .VoidKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "return")) return Token{ .type = .ReturnKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "if")) return Token{ .type = .IfKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "else")) return Token{ .type = .ElseKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "while")) return Token{ .type = .WhileKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "for")) return Token{ .type = .ForKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "do")) return Token{ .type = .DoKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "break")) return Token{ .type = .BreakKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "continue")) return Token{ .type = .ContinueKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "struct")) return Token{ .type = .StructKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "enum")) return Token{ .type = .EnumKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "typedef")) return Token{ .type = .TypedefKeyword, .value = value, .line = start_line, .col = start_col };
                     return Token{ .type = .Identifier, .value = value, .line = start_line, .col = start_col };
                 }
                 return error.InvalidCharacter;

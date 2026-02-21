@@ -13,6 +13,8 @@ pub const Parser = struct {
     pos: usize,
     allocator: std.mem.Allocator,
     structs: std.StringHashMap([]*Node), // struct name -> member declarations
+    typedefs: std.StringHashMap(ast.DataType), // alias -> original type
+    enums: std.StringHashMap(i64), // enum member -> value
 
     /// Initializes a new Parser with the given tokens.
     pub fn init(tokens: []Token, allocator: std.mem.Allocator) Parser {
@@ -21,6 +23,8 @@ pub const Parser = struct {
             .pos = 0,
             .allocator = allocator,
             .structs = std.StringHashMap([]*Node).init(allocator),
+            .typedefs = std.StringHashMap(ast.DataType).init(allocator),
+            .enums = std.StringHashMap(i64).init(allocator),
         };
     }
 
@@ -290,6 +294,53 @@ pub const Parser = struct {
         return token.value;
     }
 
+    fn parseType(self: *Parser) anyerror!ast.DataType {
+        const token = self.current() orelse return error.UnexpectedEOF;
+        if (token.type == .IntKeyword) {
+            self.advance();
+            return .Int;
+        } else if (token.type == .CharKeyword) {
+            self.advance();
+            return .Char;
+        } else if (token.type == .VoidKeyword) {
+            self.advance();
+            return .Void;
+        } else if (token.type == .Identifier) {
+            if (self.typedefs.get(token.value)) |dt| {
+                self.advance();
+                return dt;
+            }
+        }
+        return self.errorAt(token, "Expected type name");
+    }
+
+    fn parseEnum(self: *Parser) anyerror!*Node {
+        try self.expect(.EnumKeyword, "Expected 'enum'");
+        // Skip enum name if present
+        if (self.current()) |t| {
+            if (t.type == .Identifier) self.advance();
+        }
+        try self.expect(.LBrace, "Expected { after enum");
+        var val: i64 = 0;
+        while (self.current()) |t| {
+            if (t.type == .RBrace) break;
+            const ident = try self.expectIdentifier("Expected enum member name");
+            if (self.consume(.Equal)) {
+                const num = try self.parseExpr();
+                if (num.type != .Number) return self.errorAt(t, "Enum value must be constant");
+                val = num.value.?;
+            }
+            try self.enums.put(ident, val);
+            val += 1;
+            _ = self.consume(.Comma);
+        }
+        try self.expect(.RBrace, "Expected } after enum members");
+        try self.expect(.Semicolon, "Expected ; after enum");
+        const node = try self.allocator.create(Node);
+        node.* = Node{ .type = .EnumDecl };
+        return node;
+    }
+
     fn parseFactor(self: *Parser) anyerror!*Node {
         const token = self.current() orelse return error.UnexpectedEOF;
         self.advance();
@@ -298,6 +349,11 @@ pub const Parser = struct {
             node.* = Node{ .type = .Number, .value = try std.fmt.parseInt(i64, token.value, 10) };
             return node;
         } else if (token.type == .Identifier) {
+            if (self.enums.get(token.value)) |val| {
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .Number, .value = val };
+                return node;
+            }
             if (self.consume(.LParen)) {
                 var args = std.ArrayList(*Node).init(self.allocator);
                 if (!self.consume(.RParen)) {
@@ -344,13 +400,44 @@ pub const Parser = struct {
 
     fn parseStmt(self: *Parser) anyerror!*Node {
         const token = self.current() orelse return error.UnexpectedEOF;
-        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword) {
+        if (token.type == .TypedefKeyword) {
+            self.advance();
+            const original_type = try self.parseType();
+            while (self.consume(.Star)) {}
+            const alias = try self.expectIdentifier("Expected alias name after typedef");
+            try self.expect(.Semicolon, "Expected ; after typedef");
+            try self.typedefs.put(alias, original_type);
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .EnumDecl }; // Just a dummy node
+            return node;
+        }
+        if (token.type == .EnumKeyword) {
+            // Check if it's enum declaration or variable declaration
+            const i = self.pos + 2;
+            if (i < self.tokens.len and self.tokens[i].type == .LBrace) {
+                return self.parseEnum();
+            }
+        }
+        var is_typedef_alias = false;
+        if (token.type == .Identifier) {
+            if (self.typedefs.contains(token.value)) {
+                is_typedef_alias = true;
+            }
+        }
+
+        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or is_typedef_alias) {
             const is_struct = (token.type == .StructKeyword);
-            const data_type: ast.DataType = if (token.type == .CharKeyword) .Char else .Int;
+            const is_enum = (token.type == .EnumKeyword);
+            var data_type: ast.DataType = .Int;
+            if (token.type == .CharKeyword) {
+                data_type = .Char;
+            } else if (is_typedef_alias) {
+                data_type = self.typedefs.get(token.value).?;
+            }
             self.advance();
             var struct_name: ?[]const u8 = null;
-            if (is_struct) {
-                struct_name = try self.expectIdentifier("Expected struct name");
+            if (is_struct or is_enum) {
+                struct_name = try self.expectIdentifier("Expected name");
             }
             
             while (self.consume(.Star)) {}
@@ -386,8 +473,11 @@ pub const Parser = struct {
             }
         } else if (token.type == .ReturnKeyword) {
             self.advance();
-            const expr = try self.parseExpr();
-            try self.expect(.Semicolon, "Expected ;");
+            var expr: ?*Node = null;
+            if (!self.consume(.Semicolon)) {
+                expr = try self.parseExpr();
+                try self.expect(.Semicolon, "Expected ;");
+            }
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .Return, .right = expr };
             return node;
@@ -412,6 +502,29 @@ pub const Parser = struct {
             const body = try self.parseBlock();
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .While, .condition = cond, .body = body };
+            return node;
+        } else if (token.type == .DoKeyword) {
+            self.advance();
+            const body = try self.parseBlock();
+            try self.expect(.WhileKeyword, "Expected 'while' after do block");
+            try self.expect(.LParen, "Expected (");
+            const cond = try self.parseExpr();
+            try self.expect(.RParen, "Expected )");
+            try self.expect(.Semicolon, "Expected ; after do-while");
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .DoWhile, .condition = cond, .body = body };
+            return node;
+        } else if (token.type == .BreakKeyword) {
+            self.advance();
+            try self.expect(.Semicolon, "Expected ; after break");
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Break };
+            return node;
+        } else if (token.type == .ContinueKeyword) {
+            self.advance();
+            try self.expect(.Semicolon, "Expected ; after continue");
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .Continue };
             return node;
         } else if (token.type == .ForKeyword) {
             self.advance();
@@ -458,10 +571,15 @@ pub const Parser = struct {
 
     fn parseFunction(self: *Parser) anyerror!*Node {
         const ret_token = self.current() orelse return error.UnexpectedEOF;
-        if (ret_token.type != .IntKeyword and ret_token.type != .CharKeyword) {
-            return self.errorAt(ret_token, "Expected return type (int or char)");
+        if (ret_token.type != .IntKeyword and ret_token.type != .CharKeyword and ret_token.type != .VoidKeyword) {
+            return self.errorAt(ret_token, "Expected return type (int, char, or void)");
         }
-        const ret_type: ast.DataType = if (ret_token.type == .CharKeyword) .Char else .Int;
+        var ret_type: ast.DataType = .Int;
+        if (ret_token.type == .CharKeyword) {
+            ret_type = .Char;
+        } else if (ret_token.type == .VoidKeyword) {
+            ret_type = .Void;
+        }
         self.advance();
 
         while (self.consume(.Star)) {}

@@ -72,6 +72,9 @@ EXAMPLES=(
     "examples/compound_ptr.simple:42"
     "examples/nested_logic.simple:42"
     "examples/char_test.simple:42"
+    "examples/loop_control.simple:42"
+    "examples/void_char.simple:42"
+    "examples/typedef_enum.simple:42"
 )
 
 TOTAL_PASS=0

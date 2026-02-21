@@ -1,0 +1,22 @@
+int result = 0;
+
+void set_result(int val) {
+    result = val;
+    return;
+}
+
+int main() {
+    char c = 'A';
+    if (c == 65) {
+        set_result(42);
+    }
+    
+    char newline = '
+';
+    if (newline == 10) {
+        if (result == 42) {
+            return 42;
+        }
+    }
+    return 0;
+}

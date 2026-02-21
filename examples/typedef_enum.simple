@@ -1,0 +1,26 @@
+typedef int my_int;
+typedef char my_char;
+
+enum Color {
+    RED,
+    GREEN = 10,
+    BLUE
+};
+
+int main() {
+    my_int a = 42;
+    my_char c = 'A';
+
+    if (a == 42) {
+        if (c == 65) {
+            if (RED == 0) {
+                if (GREEN == 10) {
+                    if (BLUE == 11) {
+                        return 42;
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}

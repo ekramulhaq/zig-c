@@ -12,6 +12,9 @@ pub const NodeType = enum {
     If,
     While,
     For,
+    DoWhile,
+    Break,
+    Continue,
     Comparison,
     LogicalOp,
     UnaryOp,
@@ -23,12 +26,14 @@ pub const NodeType = enum {
     ArrayDecl,
     Index,
     StructDecl,
+    EnumDecl,
     MemberAccess,
 };
 
 pub const DataType = enum {
     Int,
     Char,
+    Void,
 };
 
 /// Represents a node in the Abstract Syntax Tree.

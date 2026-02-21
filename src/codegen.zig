@@ -26,6 +26,8 @@ pub const CodeGen = struct {
     strings: std.ArrayList([]const u8),
     stack_pos: i32,
     temp_stack_pos: i32,
+    break_label: ?[]const u8,
+    continue_label: ?[]const u8,
     arch: Arch,
     allocator: std.mem.Allocator,
 
@@ -40,6 +42,8 @@ pub const CodeGen = struct {
             .strings = std.ArrayList([]const u8).init(allocator),
             .stack_pos = 0,
             .temp_stack_pos = -1024, // Temps start at -1024 to avoid overlap with locals
+            .break_label = null,
+            .continue_label = null,
             .arch = arch,
             .allocator = allocator,
         };
@@ -528,7 +532,9 @@ pub const CodeGen = struct {
                 try self.genExpr(node);
             },
             .Return => {
-                try self.genExpr(node.right.?);
+                if (node.right) |right| {
+                    try self.genExpr(right);
+                }
                 if (self.arch == .arm64) {
                     try self.writer.print("    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n", .{});
                 } else {
@@ -548,22 +554,69 @@ pub const CodeGen = struct {
             .While => {
                 const start_label = self.newLabel();
                 const end_label = self.newLabel();
+                const old_break = self.break_label;
+                const old_continue = self.continue_label;
+                self.break_label = end_label;
+                self.continue_label = start_label;
+                
                 try self.writer.print("{s}:\n", .{start_label});
                 try self.genExpr(node.condition.?);
                 if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{end_label}); } else { try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{end_label}); }
                 for (node.body.?) |stmt| { try self.genStmt(stmt); }
                 try self.writer.print("{s} {s}\n{s}:\n", .{ if (self.arch == .arm64) "    b" else "    jmp", start_label, end_label });
+                
+                self.break_label = old_break;
+                self.continue_label = old_continue;
             },
             .For => {
                 const start_label = self.newLabel();
+                const update_label = self.newLabel();
                 const end_label = self.newLabel();
+                const old_break = self.break_label;
+                const old_continue = self.continue_label;
+                self.break_label = end_label;
+                self.continue_label = update_label;
+                
                 try self.genStmt(node.init.?);
                 try self.writer.print("{s}:\n", .{start_label});
                 try self.genExpr(node.condition.?);
                 if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{end_label}); } else { try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{end_label}); }
                 for (node.body.?) |stmt| { try self.genStmt(stmt); }
+                try self.writer.print("{s}:\n", .{update_label});
                 try self.genExpr(node.update.?);
                 try self.writer.print("{s} {s}\n{s}:\n", .{ if (self.arch == .arm64) "    b" else "    jmp", start_label, end_label });
+                
+                self.break_label = old_break;
+                self.continue_label = old_continue;
+            },
+            .DoWhile => {
+                const start_label = self.newLabel();
+                const cond_label = self.newLabel();
+                const end_label = self.newLabel();
+                const old_break = self.break_label;
+                const old_continue = self.continue_label;
+                self.break_label = end_label;
+                self.continue_label = cond_label;
+                
+                try self.writer.print("{s}:\n", .{start_label});
+                for (node.body.?) |stmt| { try self.genStmt(stmt); }
+                try self.writer.print("{s}:\n", .{cond_label});
+                try self.genExpr(node.condition.?);
+                if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.ne {s}\n", .{start_label}); } else { try self.writer.print("    cmpq $0, %rax\n    jne {s}\n", .{start_label}); }
+                try self.writer.print("{s}:\n", .{end_label});
+                
+                self.break_label = old_break;
+                self.continue_label = old_continue;
+            },
+            .Break => {
+                if (self.break_label) |label| {
+                    if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{label}); } else { try self.writer.print("    jmp {s}\n", .{label}); }
+                } else @panic("break outside of loop");
+            },
+            .Continue => {
+                if (self.continue_label) |label| {
+                    if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{label}); } else { try self.writer.print("    jmp {s}\n", .{label}); }
+                } else @panic("continue outside of loop");
             },
             .StructDecl => {},
             else => @panic("Invalid statement node"),
