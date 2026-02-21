@@ -34,6 +34,7 @@ pub const CodeGen = struct {
     temp_stack_pos: i32,
     break_label: ?[]const u8,
     continue_label: ?[]const u8,
+    asm_comments: bool,
     arch: Arch,
     allocator: std.mem.Allocator,
 
@@ -50,6 +51,7 @@ pub const CodeGen = struct {
             .temp_stack_pos = -1024, // Temps start at -1024 to avoid overlap with locals
             .break_label = null,
             .continue_label = null,
+            .asm_comments = false,
             .arch = arch,
             .allocator = allocator,
         };
@@ -604,6 +606,9 @@ pub const CodeGen = struct {
     }
 
     fn genStmt(self: *CodeGen, node: *Node) anyerror!void {
+        if (self.asm_comments) {
+            try self.writer.print("    ; {s}\n", .{@tagName(node.type)});
+        }
         switch (node.type) {
             .VarDecl => {
                 const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
@@ -773,6 +778,9 @@ pub const CodeGen = struct {
         self.vars.clearRetainingCapacity();
         self.stack_pos = 0;
         self.temp_stack_pos = -1024;
+        if (self.asm_comments) {
+            try self.writer.print("    ; function {s}\n", .{node.name.?});
+        }
         try self.writer.print(".globl _{s}\n", .{node.name.?});
         if (self.arch == .arm64) {
             try self.writer.print(".p2align 2\n_{s}:\n    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    sub sp, sp, #2048\n", .{node.name.?});

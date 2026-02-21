@@ -20,6 +20,9 @@ pub fn main() !void {
 
     var arch: Arch = if (builtin.cpu.arch == .aarch64) .arm64 else .x86_64;
     var input_file: ?[]const u8 = null;
+    var dump_tokens = false;
+    var dump_ast = false;
+    var asm_comments = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -35,6 +38,12 @@ pub fn main() !void {
                     std.process.exit(1);
                 }
             }
+        } else if (std.mem.eql(u8, args[i], "--dump-tokens")) {
+            dump_tokens = true;
+        } else if (std.mem.eql(u8, args[i], "--dump-ast")) {
+            dump_ast = true;
+        } else if (std.mem.eql(u8, args[i], "--asm-comments")) {
+            asm_comments = true;
         } else {
             input_file = args[i];
         }
@@ -57,8 +66,16 @@ pub fn main() !void {
         if (token.type == .EOF) break;
     }
 
+    if (dump_tokens) {
+        std.debug.print("--- Tokens ---\n", .{});
+        for (tokens.items) |token| {
+            std.debug.print("{s: <20} | {s: <10} | line {}, col {}\n", .{ @tagName(token.type), token.value, token.line, token.col });
+        }
+        std.debug.print("\n", .{});
+    }
+
     var par = Parser.init(try tokens.toOwnedSlice(), allocator);
-    const ast = par.parseProgram() catch |err| {
+    const ast_nodes = par.parseProgram() catch |err| {
         if (err == error.ParseError or err == error.UnexpectedToken or err == error.UnexpectedEOF) {
             // Error message already printed by parser
             std.process.exit(1);
@@ -67,12 +84,21 @@ pub fn main() !void {
     };
 
     var opt = Optimizer.init(allocator);
-    opt.optimize(ast);
+    opt.optimize(ast_nodes);
+
+    if (dump_ast) {
+        std.debug.print("--- AST ---\n", .{});
+        for (ast_nodes) |node| {
+            node.dump(0);
+        }
+        std.debug.print("\n", .{});
+    }
 
     const file = try std.fs.cwd().createFile("out.asm", .{});
     defer file.close();
     var cg = CodeGen.init(file.writer(), allocator, arch, par.type_system);
-    cg.genProgram(ast) catch |err| {
+    cg.asm_comments = asm_comments;
+    cg.genProgram(ast_nodes) catch |err| {
         std.debug.print("CodeGen Error: {}\n", .{err});
         std.process.exit(1);
     };
