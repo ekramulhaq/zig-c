@@ -1,0 +1,30 @@
+// This test verifies new features: comments, modulo, equality, comparison, logical ops, unary minus.
+
+int a = 10;
+int b = 3;
+int c = a % b; // c = 1
+
+int d = -5;
+int e = !0; // e = 1
+
+int result = 0;
+
+// Test equality and comparison
+if (c == 1 && d < 0 && a >= 10 && b <= 3 && a != b) {
+    result = 42;
+}
+
+// Test logical OR and precedence
+if (result == 42 || 1 > 2 + 3) {
+    // result should still be 42
+} else {
+    result = 0;
+}
+
+// Test unary minus in expression
+int f = -d + -1; // f = 5 - 1 = 4
+if (f == 4) {
+    result = result + 1; // result = 43
+}
+
+return result; // Should return 43

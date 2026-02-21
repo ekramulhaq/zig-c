@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Build the compiler
+echo "--- Building Compiler ---"
+zig build
+
+COMPILER="./zig-out/bin/compiler"
+
+# Function to run a test
+# Arguments: file, expected_exit_code, arch
+run_test() {
+    local file=$1
+    local expected=$2
+    local arch=$3
+
+    echo "Testing $file ($arch)..."
+    
+    # Run compiler
+    $COMPILER --arch $arch $file
+    if [ $? -ne 0 ]; then
+        echo "  [FAIL] Compilation failed"
+        return 1
+    fi
+
+    # Assemble and link
+    mv out.asm out.s
+    clang -arch $arch -o out_bin out.s
+    if [ $? -ne 0 ]; then
+        echo "  [FAIL] Assembly/Linking failed"
+        rm -f out.s
+        return 1
+    fi
+
+    # Run and check exit code
+    ./out_bin
+    local actual=$?
+    
+    if [ $actual -eq $expected ]; then
+        echo "  [PASS] Got $actual"
+    else
+        echo "  [FAIL] Expected $expected but got $actual"
+        rm -f out.s out_bin
+        return 1
+    fi
+
+    rm -f out.s out_bin
+    return 0
+}
+
+# Run tests for both architectures
+ARCHS=("arm64" "x86_64")
+EXAMPLES=(
+    "examples/loop.simple:45"
+    "examples/if_else.simple:2"
+    "examples/arithmetic.simple:10"
+    "examples/nested.simple:9"
+    "examples/new_features.simple:43"
+    "examples/bitwise_compound.simple:43"
+)
+
+TOTAL_PASS=0
+TOTAL_FAIL=0
+
+for arch in "${ARCHS[@]}"; do
+    echo "=== Architecture: $arch ==="
+    for item in "${EXAMPLES[@]}"; do
+        file="${item%%:*}"
+        expected="${item##*:}"
+        
+        run_test "$file" "$expected" "$arch"
+        if [ $? -eq 0 ]; then
+            ((TOTAL_PASS++))
+        else
+            ((TOTAL_FAIL++))
+        fi
+    done
+    echo ""
+done
+
+echo "--- Summary ---"
+echo "Passed: $TOTAL_PASS"
+echo "Failed: $TOTAL_FAIL"
+
+if [ $TOTAL_FAIL -ne 0 ]; then
+    exit 1
+fi
