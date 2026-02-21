@@ -1,0 +1,37 @@
+int main() {
+    int count = 0;
+    int i = 0;
+    while (i < 10) {
+        int j = 0;
+        while (j < 10) {
+            int k = 0;
+            while (k < 10) {
+                k = k + 1;
+                if (k == 5) {
+                    continue; // skips k=5
+                }
+                count = count + 1;
+                if (k == 8) {
+                    break; // breaks k loop at 8
+                }
+            }
+            // k loop runs for k=1,2,3,4, 6,7,8 (7 times)
+            j = j + 1;
+            if (j == 3) {
+                break; // breaks j loop at 3
+            }
+        }
+        // j loop runs for j=0,1,2 (3 times)
+        // total count per i: 3 * 7 = 21
+        i = i + 1;
+        if (i == 2) {
+            break; // breaks i loop at 2
+        }
+    }
+    // i loop runs for i=0,1 (2 times)
+    // final count: 2 * 21 = 42
+    if (count == 42) {
+        return 42;
+    }
+    return count;
+}

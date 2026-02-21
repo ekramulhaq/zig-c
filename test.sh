@@ -75,6 +75,7 @@ EXAMPLES=(
     "examples/loop_control.simple:42"
     "examples/void_char.simple:42"
     "examples/typedef_enum.simple:42"
+    "examples/nested_loops_complex.simple:42"
 )
 
 TOTAL_PASS=0
