@@ -1,2 +1,6 @@
-int x = (10 + 5) * 2 / 3;
-return x;
+int main() {
+    int x = 5;
+    int y = 10;
+    int z = (x + y) * 2 / 3;
+    return z; // (15 * 2) / 3 = 10
+}

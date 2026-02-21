@@ -46,6 +46,7 @@ const TokenType = enum {
     RParen,
     LBrace,
     RBrace,
+    Comma,
     EOF,
 };
 
@@ -67,13 +68,15 @@ const NodeType = enum {
     Comparison,
     LogicalOp,
     UnaryOp,
+    Function,
+    FunctionCall,
 };
 
 const Node = struct {
     type: NodeType,
     value: ?i64 = null,
     name: ?[]const u8 = null,
-    op: ?TokenType = null, // Store the TokenType of the operator
+    op: ?TokenType = null,
     left: ?*Node = null,
     right: ?*Node = null,
     condition: ?*Node = null,
@@ -81,6 +84,8 @@ const Node = struct {
     else_body: ?[]*Node = null,
     init: ?*Node = null,
     update: ?*Node = null,
+    args: ?[]*Node = null,
+    params: ?[][]const u8 = null,
 };
 
 const Lexer = struct {
@@ -204,6 +209,7 @@ const Lexer = struct {
             ')' => return Token{ .type = .RParen, .value = ")" },
             '{' => return Token{ .type = .LBrace, .value = "{" },
             '}' => return Token{ .type = .RBrace, .value = "}" },
+            ',' => return Token{ .type = .Comma, .value = "," },
             else => {
                 if (std.ascii.isDigit(c)) {
                     const start = self.pos - 1;
@@ -248,6 +254,27 @@ const Parser = struct {
 
     fn advance(self: *Parser) void {
         self.pos += 1;
+    }
+
+    fn expect(self: *Parser, token_type: TokenType, msg: []const u8) !void {
+        if (self.current()) |t| {
+            if (t.type == token_type) {
+                self.advance();
+                return;
+            }
+        }
+        std.debug.print("Error: {s}\n", .{msg});
+        return error.UnexpectedToken;
+    }
+
+    fn consume(self: *Parser, token_type: TokenType) bool {
+        if (self.current()) |t| {
+            if (t.type == token_type) {
+                self.advance();
+                return true;
+            }
+        }
+        return false;
     }
 
     fn parseExpr(self: *Parser) anyerror!*Node {
@@ -429,13 +456,25 @@ const Parser = struct {
             node.* = Node{ .type = .Number, .value = try std.fmt.parseInt(i64, token.value, 10) };
             return node;
         } else if (token.type == .Identifier) {
+            if (self.consume(.LParen)) {
+                var args = std.ArrayList(*Node).init(self.allocator);
+                if (!self.consume(.RParen)) {
+                    while (true) {
+                        try args.append(try self.parseExpr());
+                        if (!self.consume(.Comma)) break;
+                    }
+                    try self.expect(.RParen, "Expected ) after function arguments");
+                }
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .FunctionCall, .name = token.value, .args = try args.toOwnedSlice() };
+                return node;
+            }
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .Identifier, .name = token.value };
             return node;
         } else if (token.type == .LParen) {
             const expr = try self.parseExpr();
-            if (self.current().?.type != .RParen) @panic("Expected )");
-            self.advance();
+            try self.expect(.RParen, "Expected )");
             return expr;
         }
         @panic("Expected number, identifier, or (");
@@ -448,131 +487,183 @@ const Parser = struct {
             const ident = self.current() orelse @panic("Expected identifier");
             if (ident.type != .Identifier) @panic("Expected identifier");
             self.advance();
-            if (self.current().?.type != .Equal) @panic("Expected =");
-            self.advance();
-            const expr = try self.parseExpr();
-            if (self.current().?.type != .Semicolon) @panic("Expected ;");
-            self.advance();
-            const node = try self.allocator.create(Node);
-            node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr };
-            return node;
+            if (self.consume(.Equal)) {
+                const expr = try self.parseExpr();
+                try self.expect(.Semicolon, "Expected ; after variable declaration");
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr };
+                return node;
+            } else {
+                try self.expect(.Semicolon, "Expected ; after variable declaration");
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null };
+                return node;
+            }
         } else if (token.type == .ReturnKeyword) {
             self.advance();
             const expr = try self.parseExpr();
-            if (self.current().?.type != .Semicolon) @panic("Expected ;");
-            self.advance();
+            try self.expect(.Semicolon, "Expected ;");
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .Return, .right = expr };
             return node;
         } else if (token.type == .IfKeyword) {
             self.advance();
-            if (self.current().?.type != .LParen) @panic("Expected (");
-            self.advance();
+            try self.expect(.LParen, "Expected (");
             const cond = try self.parseExpr();
-            if (self.current().?.type != .RParen) @panic("Expected )");
-            self.advance();
-            if (self.current().?.type != .LBrace) @panic("Expected {");
-            self.advance();
+            try self.expect(.RParen, "Expected )");
+            try self.expect(.LBrace, "Expected {");
             var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current().?.type != .RBrace) {
+            while (self.current()) |t| {
+                if (t.type == .RBrace) break;
                 try body.append(try self.parseStmt());
             }
-            self.advance();
+            try self.expect(.RBrace, "Expected } after if body");
             var else_body: ?[]*Node = null;
-            if (self.current()) |t| {
-                if (t.type == .ElseKeyword) {
-                    self.advance();
-                    if (self.current().?.type != .LBrace) @panic("Expected {");
-                    self.advance();
-                    var else_stmts = std.ArrayList(*Node).init(self.allocator);
-                    while (self.current().?.type != .RBrace) {
-                        try else_stmts.append(try self.parseStmt());
-                    }
-                    self.advance();
-                    else_body = try else_stmts.toOwnedSlice();
+            if (self.consume(.ElseKeyword)) {
+                try self.expect(.LBrace, "Expected {");
+                var else_stmts = std.ArrayList(*Node).init(self.allocator);
+                while (self.current()) |t| {
+                    if (t.type == .RBrace) break;
+                    try else_stmts.append(try self.parseStmt());
                 }
+                try self.expect(.RBrace, "Expected } after else body");
+                else_body = try else_stmts.toOwnedSlice();
             }
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .If, .condition = cond, .body = try body.toOwnedSlice(), .else_body = else_body };
             return node;
         } else if (token.type == .WhileKeyword) {
             self.advance();
-            if (self.current().?.type != .LParen) @panic("Expected (");
-            self.advance();
+            try self.expect(.LParen, "Expected (");
             const cond = try self.parseExpr();
-            if (self.current().?.type != .RParen) @panic("Expected )");
-            self.advance();
-            if (self.current().?.type != .LBrace) @panic("Expected {");
-            self.advance();
+            try self.expect(.RParen, "Expected )");
+            try self.expect(.LBrace, "Expected {");
             var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current().?.type != .RBrace) {
+            while (self.current()) |t| {
+                if (t.type == .RBrace) break;
                 try body.append(try self.parseStmt());
             }
-            self.advance();
+            try self.expect(.RBrace, "Expected } after while body");
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .While, .condition = cond, .body = try body.toOwnedSlice() };
             return node;
         } else if (token.type == .ForKeyword) {
             self.advance();
-            if (self.current().?.type != .LParen) @panic("Expected (");
-            self.advance();
+            try self.expect(.LParen, "Expected (");
             const init_stmt = try self.parseStmt();
             const cond = try self.parseExpr();
-            if (self.current().?.type != .Semicolon) @panic("Expected ;");
-            self.advance();
+            try self.expect(.Semicolon, "Expected ;");
             const update = try self.parseExpr();
-            if (self.current().?.type != .RParen) @panic("Expected )");
-            self.advance();
-            if (self.current().?.type != .LBrace) @panic("Expected {");
-            self.advance();
+            try self.expect(.RParen, "Expected )");
+            try self.expect(.LBrace, "Expected {");
             var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current().?.type != .RBrace) {
+            while (self.current()) |t| {
+                if (t.type == .RBrace) break;
                 try body.append(try self.parseStmt());
             }
-            self.advance();
+            try self.expect(.RBrace, "Expected } after for body");
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .For, .init = init_stmt, .condition = cond, .update = update, .body = try body.toOwnedSlice() };
             return node;
-        } else if (token.type == .Identifier) {
+        } else {
             const expr = try self.parseExpr();
-            if (self.current().?.type != .Semicolon) @panic("Expected ; after expression");
-            self.advance();
+            try self.expect(.Semicolon, "Expected ; after expression");
             return expr;
         }
-        @panic("Invalid statement");
+    }
+
+    fn parseFunction(self: *Parser) anyerror!*Node {
+        try self.expect(.IntKeyword, "Only int return type is supported");
+        const ident = self.current() orelse @panic("Expected function name");
+        self.advance();
+        try self.expect(.LParen, "Expected ( after function name");
+        var params = std.ArrayList([]const u8).init(self.allocator);
+        if (!self.consume(.RParen)) {
+            while (true) {
+                try self.expect(.IntKeyword, "Only int parameters are supported");
+                const p_ident = self.current() orelse @panic("Expected parameter name");
+                self.advance();
+                try params.append(p_ident.value);
+                if (!self.consume(.Comma)) break;
+            }
+            try self.expect(.RParen, "Expected ) after function parameters");
+        }
+        try self.expect(.LBrace, "Expected { to start function body");
+        var body = std.ArrayList(*Node).init(self.allocator);
+        while (self.current()) |t| {
+            if (t.type == .RBrace) break;
+            try body.append(try self.parseStmt());
+        }
+        try self.expect(.RBrace, "Expected } to end function body");
+        const node = try self.allocator.create(Node);
+        node.* = Node{ .type = .Function, .name = ident.value, .params = try params.toOwnedSlice(), .body = try body.toOwnedSlice() };
+        return node;
     }
 
     fn parseProgram(self: *Parser) anyerror![]*Node {
-        var stmts = std.ArrayList(*Node).init(self.allocator);
+        var items = std.ArrayList(*Node).init(self.allocator);
         while (self.current()) |token| {
             if (token.type == .EOF) break;
-            try stmts.append(try self.parseStmt());
+            try items.append(try self.parseFunction());
         }
-        return try stmts.toOwnedSlice();
+        return try items.toOwnedSlice();
     }
 };
 
 const CodeGen = struct {
     writer: std.fs.File.Writer,
     label_count: usize,
-    vars: std.StringHashMap(void),
+    vars: std.StringHashMap(i32),
+    stack_pos: i32,
+    temp_stack_pos: i32,
     arch: Arch,
+    allocator: std.mem.Allocator,
 
     fn init(writer: std.fs.File.Writer, allocator: std.mem.Allocator, arch: Arch) CodeGen {
-        return CodeGen{ .writer = writer, .label_count = 0, .vars = std.StringHashMap(void).init(allocator), .arch = arch };
+        return CodeGen{
+            .writer = writer,
+            .label_count = 0,
+            .vars = std.StringHashMap(i32).init(allocator),
+            .stack_pos = 0,
+            .temp_stack_pos = -128,
+            .arch = arch,
+            .allocator = allocator,
+        };
+    }
+
+    fn pushTemp(self: *CodeGen) !void {
+        if (self.arch == .arm64) {
+            try self.writer.print("    str x0, [x29, #{}]\n", .{self.temp_stack_pos});
+        } else {
+            try self.writer.print("    movq %rax, {}(%rbp)\n", .{self.temp_stack_pos});
+        }
+        self.temp_stack_pos -= 8;
+    }
+
+    fn popTemp(self: *CodeGen, reg: []const u8) !void {
+        self.temp_stack_pos += 8;
+        if (self.arch == .arm64) {
+            try self.writer.print("    ldr {s}, [x29, #{}]\n", .{reg, self.temp_stack_pos});
+        } else {
+            try self.writer.print("    movq {}(%rbp), {s}\n", .{self.temp_stack_pos, reg});
+        }
     }
 
     fn newLabel(self: *CodeGen) []const u8 {
-        const label = std.fmt.allocPrint(std.heap.page_allocator, "L{}", .{self.label_count}) catch @panic("Allocation failed");
+        const label = std.fmt.allocPrint(self.allocator, "L{}", .{self.label_count}) catch @panic("Allocation failed");
         self.label_count += 1;
         return label;
     }
 
-    fn registerVar(self: *CodeGen, name: []const u8) !void {
-        try self.vars.put(name, {});
+    fn registerVar(self: *CodeGen, name: []const u8) !i32 {
+        if (self.vars.get(name)) |offset| return offset;
+        self.stack_pos -= 8;
+        const offset = self.stack_pos;
+        try self.vars.put(name, offset);
+        return offset;
     }
 
-    fn genExpr(self: *CodeGen, node: *Node) !void {
+    fn genExpr(self: *CodeGen, node: *Node) anyerror!void {
         switch (node.type) {
             .Number => {
                 if (self.arch == .arm64) {
@@ -582,29 +673,28 @@ const CodeGen = struct {
                 }
             },
             .Identifier => {
+                const offset = self.vars.get(node.name.?) orelse @panic("Undefined variable");
                 if (self.arch == .arm64) {
-                    try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
-                    try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                    try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
                 } else {
-                    try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                    try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
                 }
             },
             .Assignment => {
+                const offset = try self.registerVar(node.name.?);
                 if (node.op == null or node.op.? == .Equal) {
                     try self.genExpr(node.right.?);
                 } else {
                     if (self.arch == .arm64) {
-                        try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
-                        try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
-                        try self.writer.print("    str x0, [sp, #-16]!\n", .{});
+                        try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
                     } else {
-                        try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
-                        try self.writer.print("    pushq %rax\n", .{});
+                        try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
                     }
+                    try self.pushTemp();
                     try self.genExpr(node.right.?);
                     if (self.arch == .arm64) {
                         try self.writer.print("    mov x1, x0\n", .{});
-                        try self.writer.print("    ldr x0, [sp], #16\n", .{});
+                        try self.popTemp("x0");
                         switch (node.op.?) {
                             .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
                             .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
@@ -617,19 +707,19 @@ const CodeGen = struct {
                             else => unreachable,
                         }
                     } else {
-                        try self.writer.print("    movq %rax, %rbx\n", .{});
-                        try self.writer.print("    popq %rax\n", .{});
+                        try self.writer.print("    movq %rax, %r10\n", .{});
+                        try self.popTemp("%rax");
                         switch (node.op.?) {
-                            .PlusEqual => try self.writer.print("    addq %rbx, %rax\n", .{}),
-                            .MinusEqual => try self.writer.print("    subq %rbx, %rax\n", .{}),
-                            .StarEqual => try self.writer.print("    imulq %rbx, %rax\n", .{}),
+                            .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
+                            .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
+                            .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
                             .SlashEqual => {
                                 try self.writer.print("    cqo\n", .{});
-                                try self.writer.print("    idivq %rbx\n", .{});
+                                try self.writer.print("    idivq %r10\n", .{});
                             },
                             .PercentEqual => {
                                 try self.writer.print("    cqo\n", .{});
-                                try self.writer.print("    idivq %rbx\n", .{});
+                                try self.writer.print("    idivq %r10\n", .{});
                                 try self.writer.print("    movq %rdx, %rax\n", .{});
                             },
                             else => unreachable,
@@ -637,19 +727,45 @@ const CodeGen = struct {
                     }
                 }
                 if (self.arch == .arm64) {
-                    try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
-                    try self.writer.print("    str x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                    try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
                 } else {
-                    try self.writer.print("    movq %rax, _{s}(%rip)\n", .{node.name.?});
+                    try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
+                }
+            },
+            .FunctionCall => {
+                if (node.args) |args| {
+                    for (args) |arg| {
+                        try self.genExpr(arg);
+                        try self.pushTemp();
+                    }
+                    var j: usize = args.len;
+                    while (j > 0) {
+                        j -= 1;
+                        if (self.arch == .arm64) {
+                            var buf: [16]u8 = undefined;
+                            const reg = try std.fmt.bufPrint(&buf, "x{}", .{j});
+                            try self.popTemp(reg);
+                        } else {
+                            const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
+                            if (j < 6) {
+                                try self.popTemp(arg_regs[j]);
+                            } else @panic("More than 6 arguments not supported");
+                        }
+                    }
+                }
+                if (self.arch == .arm64) {
+                    try self.writer.print("    bl _{s}\n", .{node.name.?});
+                } else {
+                    try self.writer.print("    callq _{s}\n", .{node.name.?});
                 }
             },
             .BinaryOp => {
                 try self.genExpr(node.left.?);
+                try self.pushTemp();
+                try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    str x0, [sp, #-16]!\n", .{});
-                    try self.genExpr(node.right.?);
                     try self.writer.print("    mov x1, x0\n", .{});
-                    try self.writer.print("    ldr x0, [sp], #16\n", .{});
+                    try self.popTemp("x0");
                     switch (node.op.?) {
                         .Plus => try self.writer.print("    add x0, x0, x1\n", .{}),
                         .Minus => try self.writer.print("    sub x0, x0, x1\n", .{}),
@@ -667,32 +783,30 @@ const CodeGen = struct {
                         else => @panic("Invalid binary operator"),
                     }
                 } else {
-                    try self.writer.print("    pushq %rax\n", .{});
-                    try self.genExpr(node.right.?);
-                    try self.writer.print("    movq %rax, %rbx\n", .{});
-                    try self.writer.print("    popq %rax\n", .{});
+                    try self.writer.print("    movq %rax, %r10\n", .{});
+                    try self.popTemp("%rax");
                     switch (node.op.?) {
-                        .Plus => try self.writer.print("    addq %rbx, %rax\n", .{}),
-                        .Minus => try self.writer.print("    subq %rbx, %rax\n", .{}),
-                        .Star => try self.writer.print("    imulq %rbx, %rax\n", .{}),
+                        .Plus => try self.writer.print("    addq %r10, %rax\n", .{}),
+                        .Minus => try self.writer.print("    subq %r10, %rax\n", .{}),
+                        .Star => try self.writer.print("    imulq %r10, %rax\n", .{}),
                         .Slash => {
                             try self.writer.print("    cqo\n", .{});
-                            try self.writer.print("    idivq %rbx\n", .{});
+                            try self.writer.print("    idivq %r10\n", .{});
                         },
                         .Percent => {
                             try self.writer.print("    cqo\n", .{});
-                            try self.writer.print("    idivq %rbx\n", .{});
+                            try self.writer.print("    idivq %r10\n", .{});
                             try self.writer.print("    movq %rdx, %rax\n", .{});
                         },
-                        .Ampersand => try self.writer.print("    andq %rbx, %rax\n", .{}),
-                        .Pipe => try self.writer.print("    orq %rbx, %rax\n", .{}),
-                        .Caret => try self.writer.print("    xorq %rbx, %rax\n", .{}),
+                        .Ampersand => try self.writer.print("    andq %r10, %rax\n", .{}),
+                        .Pipe => try self.writer.print("    orq %r10, %rax\n", .{}),
+                        .Caret => try self.writer.print("    xorq %r10, %rax\n", .{}),
                         .LessLess => {
-                            try self.writer.print("    movq %rbx, %rcx\n", .{});
+                            try self.writer.print("    movq %r10, %rcx\n", .{});
                             try self.writer.print("    shlq %cl, %rax\n", .{});
                         },
                         .GreaterGreater => {
-                            try self.writer.print("    movq %rbx, %rcx\n", .{});
+                            try self.writer.print("    movq %r10, %rcx\n", .{});
                             try self.writer.print("    sarq %cl, %rax\n", .{});
                         },
                         else => @panic("Invalid binary operator"),
@@ -701,11 +815,11 @@ const CodeGen = struct {
             },
             .Comparison => {
                 try self.genExpr(node.left.?);
+                try self.pushTemp();
+                try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    str x0, [sp, #-16]!\n", .{});
-                    try self.genExpr(node.right.?);
                     try self.writer.print("    mov x1, x0\n", .{});
-                    try self.writer.print("    ldr x0, [sp], #16\n", .{});
+                    try self.popTemp("x0");
                     try self.writer.print("    cmp x0, x1\n", .{});
                     const label_true = self.newLabel();
                     const label_end = self.newLabel();
@@ -724,11 +838,9 @@ const CodeGen = struct {
                     try self.writer.print("    mov x0, #1\n", .{});
                     try self.writer.print("{s}:\n", .{label_end});
                 } else {
-                    try self.writer.print("    pushq %rax\n", .{});
-                    try self.genExpr(node.right.?);
-                    try self.writer.print("    movq %rax, %rbx\n", .{});
-                    try self.writer.print("    popq %rax\n", .{});
-                    try self.writer.print("    cmpq %rbx, %rax\n", .{});
+                    try self.writer.print("    movq %rax, %r10\n", .{});
+                    try self.popTemp("%rax");
+                    try self.writer.print("    cmpq %r10, %rax\n", .{});
                     const label_true = self.newLabel();
                     const label_end = self.newLabel();
                     switch (node.op.?) {
@@ -820,13 +932,16 @@ const CodeGen = struct {
     fn genStmt(self: *CodeGen, node: *Node) !void {
         switch (node.type) {
             .VarDecl => {
-                try self.registerVar(node.name.?);
-                try self.genExpr(node.right.?);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
-                    try self.writer.print("    str x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                if (node.right) |right| {
+                    try self.genExpr(right);
+                    const offset = try self.registerVar(node.name.?);
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
+                    } else {
+                        try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
+                    }
                 } else {
-                    try self.writer.print("    movq %rax, _{s}(%rip)\n", .{node.name.?});
+                    _ = try self.registerVar(node.name.?);
                 }
             },
             .Assignment => {
@@ -835,12 +950,13 @@ const CodeGen = struct {
             .Return => {
                 try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
+                    try self.writer.print("    mov sp, x29\n", .{});
                     try self.writer.print("    ldp x29, x30, [sp], #16\n", .{});
                     try self.writer.print("    ret\n", .{});
                 } else {
-                    try self.writer.print("    movq %rax, %rdi\n", .{});
-                    try self.writer.print("    movq $0x2000001, %rax\n", .{});
-                    try self.writer.print("    syscall\n", .{});
+                    try self.writer.print("    movq %rbp, %rsp\n", .{});
+                    try self.writer.print("    popq %rbp\n", .{});
+                    try self.writer.print("    ret\n", .{});
                 }
             },
             .If => {
@@ -916,43 +1032,69 @@ const CodeGen = struct {
                 }
                 try self.writer.print("{s}:\n", .{end_label});
             },
+            .FunctionCall => {
+                try self.genExpr(node);
+            },
             else => @panic("Invalid statement node"),
         }
     }
 
-    fn genProgram(self: *CodeGen, nodes: []*Node) !void {
+    fn genFunction(self: *CodeGen, node: *Node) !void {
+        self.vars.clearRetainingCapacity();
+        self.stack_pos = 0;
+        self.temp_stack_pos = -128; // Reset for each function
+
+        try self.writer.print(".globl _{s}\n", .{node.name.?});
         if (self.arch == .arm64) {
-            try self.writer.print(".text\n", .{});
-            try self.writer.print(".globl _main\n", .{});
             try self.writer.print(".p2align 2\n", .{});
-            try self.writer.print("_main:\n", .{});
+            try self.writer.print("_{s}:\n", .{node.name.?});
             try self.writer.print("    stp x29, x30, [sp, #-16]!\n", .{});
             try self.writer.print("    mov x29, sp\n", .{});
-            for (nodes) |node| {
-                try self.genStmt(node);
-            }
-            try self.writer.print("    mov x0, #0\n", .{});
-            try self.writer.print("    ldp x29, x30, [sp], #16\n", .{});
-            try self.writer.print("    ret\n", .{});
-            var it = self.vars.keyIterator();
-            while (it.next()) |key| {
-                try self.writer.print(".comm _{s}, 8\n", .{key.*});
-            }
+            try self.writer.print("    sub sp, sp, #512\n", .{});
         } else {
-            try self.writer.print(".text\n", .{});
-            try self.writer.print(".globl _main\n", .{});
-            try self.writer.print("_main:\n", .{});
+            try self.writer.print(".p2align 4, 0x90\n", .{});
+            try self.writer.print("_{s}:\n", .{node.name.?});
             try self.writer.print("    pushq %rbp\n", .{});
             try self.writer.print("    movq %rsp, %rbp\n", .{});
-            for (nodes) |node| {
-                try self.genStmt(node);
+            try self.writer.print("    subq $512, %rsp\n", .{});
+        }
+
+        if (node.params) |params| {
+            for (params, 0..) |param, idx| {
+                const offset = try self.registerVar(param);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, offset});
+                } else {
+                    const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
+                    if (idx < 6) {
+                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
+                    }
+                }
             }
-            try self.writer.print("    movq $0x2000001, %rax\n", .{});
-            try self.writer.print("    movq $0, %rdi\n", .{});
-            try self.writer.print("    syscall\n", .{});
-            var it = self.vars.keyIterator();
-            while (it.next()) |key| {
-                try self.writer.print(".comm _{s}, 8, 3\n", .{key.*});
+        }
+
+        for (node.body.?) |stmt| {
+            try self.genStmt(stmt);
+        }
+
+        if (self.arch == .arm64) {
+            try self.writer.print("    mov x0, #0\n", .{});
+            try self.writer.print("    mov sp, x29\n", .{});
+            try self.writer.print("    ldp x29, x30, [sp], #16\n", .{});
+            try self.writer.print("    ret\n", .{});
+        } else {
+            try self.writer.print("    xorq %rax, %rax\n", .{});
+            try self.writer.print("    movq %rbp, %rsp\n", .{});
+            try self.writer.print("    popq %rbp\n", .{});
+            try self.writer.print("    ret\n", .{});
+        }
+    }
+
+    fn genProgram(self: *CodeGen, nodes: []*Node) !void {
+        try self.writer.print(".text\n", .{});
+        for (nodes) |node| {
+            if (node.type == .Function) {
+                try self.genFunction(node);
             }
         }
     }
@@ -986,16 +1128,14 @@ pub fn main() !void {
     }
 
     const source = if (input_file) |path| try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) else
-        \\int x = 0;
-        \\for (int i = 0; i < 5; i = i + 1) {
-        \\    x = x + i;
+        \\int add(int a, int b) {
+        \\    return a + b;
         \\}
-        \\if (x > 9) {
-        \\    x = 42;
-        \\} else {
-        \\    x = 0;
+        \\
+        \\int main() {
+        \\    int x = add(10, 32);
+        \\    return x;
         \\}
-        \\return x;
     ;
     var lexer = Lexer.init(source);
     var tokens = std.ArrayList(Token).init(allocator);

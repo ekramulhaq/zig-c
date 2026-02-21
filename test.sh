@@ -56,6 +56,7 @@ EXAMPLES=(
     "examples/nested.simple:9"
     "examples/new_features.simple:43"
     "examples/bitwise_compound.simple:43"
+    "examples/functions.simple:11"
 )
 
 TOTAL_PASS=0
