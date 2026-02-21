@@ -1,41 +1,64 @@
 # Simple Compiler in Zig
 
-This project implements a simple compiler for a C-like language, written in Zig.
-It targets x86-64 assembly (AT&T syntax) compatible with macOS.
+A multi-pass, multi-architecture compiler for a subset of the C language, implemented in Zig. This project targets macOS on both Intel (x86_64) and Apple Silicon (ARM64).
 
-## Building the Compiler
+## Features
 
-Run the following command to build and run the compiler:
+- **Language Constructs**: Integers (`int`), Characters (`char`), `void` functions, Structs, Enums, and `typedef`.
+- **Control Flow**: `if/else`, `while`, `for`, `do-while`, `break`, and `continue`.
+- **Operators**: Full suite of arithmetic, bitwise, comparison, and logical operators.
+- **Memory**: Support for pointers (`&`, `*`), arrays, and global variables.
+- **Architectures**: Code generation for ARM64 and x86_64 (macOS).
+- **Optimization**: Constant folding at the AST level.
+
+## Getting Started
+
+### Prerequisites
+
+- **Zig**: Version 0.13.0 or 0.14.0 (for best compatibility).
+- **macOS**: Target system for assembly and linking.
+
+### Building the Compiler
+
+Run the following command to build the project:
 
 ```bash
-zig build run
+zig build
 ```
 
-This will generate an assembly file named `out.asm`.
+The compiled binary will be located in `zig-out/bin/compiler`.
 
-## Assembling and Running the Output
+### Compiling and Running a Program
 
-To run the generated assembly on macOS (including Apple Silicon via Rosetta 2), use `clang` with the `-arch x86_64` flag:
+To compile a `.simple` source file (a subset of C) into an executable:
 
 ```bash
-# Rename the file to .s so clang recognizes it as assembly source
+# Compile to ARM64 assembly (default)
+./zig-out/bin/compiler --arch arm64 examples/arithmetic.simple
+
+# Assemble and link the generated out.asm
 mv out.asm out.s
+clang -arch arm64 -o my_app out.s
 
-# Assemble and link (targeting x86_64)
-clang -arch x86_64 -o out out.s
-
-# Run the executable
-./out
-
-# Check the exit code (should be 42)
-echo "Exit Code: $?"
+# Run the app
+./my_app
+echo "Exit code: $?"
 ```
 
-## Language Features
+## Running Tests
 
-Supported features:
-- Variables (`int x = 0;`)
-- Arithmetic (`+, -, *, /`)
-- Comparisons (`>, <`)
-- Control Flow (`if/else`, `while`, `for`)
-- Return statement (`return x;`)
+To run the automated test suite, which verifies 26 test cases across both supported architectures:
+
+```bash
+./test.sh
+```
+
+## Documentation
+
+For a detailed language specification and usage guide, see [DOCUMENTATION.md](DOCUMENTATION.md).
+
+For a deep dive into the system architecture and internal design, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## License
+
+MIT
