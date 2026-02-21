@@ -87,6 +87,8 @@ pub const TypeSystem = struct {
             .Int => return 8,
             .Char => return 8, // Padded to 8 for simple alignment in this compiler
             .Void => return 0,
+            .Float => return 8,
+            .Double => return 8,
         }
     }
 

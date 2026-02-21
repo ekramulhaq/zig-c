@@ -75,6 +75,12 @@ pub const ParserBase = struct {
         } else if (token.type == .CharKeyword) {
             self.advance();
             return .{ .id = .Char };
+        } else if (token.type == .FloatKeyword) {
+            self.advance();
+            return .{ .id = .Float };
+        } else if (token.type == .DoubleKeyword) {
+            self.advance();
+            return .{ .id = .Double };
         } else if (token.type == .VoidKeyword) {
             self.advance();
             return .{ .id = .Void };

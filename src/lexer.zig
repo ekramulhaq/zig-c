@@ -233,9 +233,19 @@ pub const Lexer = struct {
             else => {
                 if (std.ascii.isDigit(c)) {
                     const start_pos = self.pos - 1;
+                    var is_float = false;
                     while (self.peek()) |pc| {
+                        if (pc == '.') {
+                            if (is_float) break;
+                            is_float = true;
+                            _ = self.advance();
+                            continue;
+                        }
                         if (!std.ascii.isDigit(pc)) break;
                         _ = self.advance();
+                    }
+                    if (is_float) {
+                        return Token{ .type = .FloatLiteral, .value = self.source[start_pos..self.pos], .line = start_line, .col = start_col };
                     }
                     return Token{ .type = .Number, .value = self.source[start_pos..self.pos], .line = start_line, .col = start_col };
                 }
@@ -248,6 +258,8 @@ pub const Lexer = struct {
                     const value = self.source[start_pos..self.pos];
                     if (std.mem.eql(u8, value, "int")) return Token{ .type = .IntKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "char")) return Token{ .type = .CharKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "float")) return Token{ .type = .FloatKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "double")) return Token{ .type = .DoubleKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "void")) return Token{ .type = .VoidKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "return")) return Token{ .type = .ReturnKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "if")) return Token{ .type = .IfKeyword, .value = value, .line = start_line, .col = start_col };

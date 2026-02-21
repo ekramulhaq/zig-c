@@ -66,7 +66,7 @@ pub const StmtParser = struct {
             alias_type = self.base.type_system.typedefs.get(token.value);
         }
 
-        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .VoidKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or alias_type != null) {
+        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .FloatKeyword or token.type == .DoubleKeyword or token.type == .VoidKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or alias_type != null) {
             const is_struct = (token.type == .StructKeyword);
             const is_enum = (token.type == .EnumKeyword);
             var data_type: ast.DataType = .Int;
@@ -79,6 +79,10 @@ pub const StmtParser = struct {
             } else {
                 if (token.type == .CharKeyword) {
                     data_type = .Char;
+                } else if (token.type == .FloatKeyword) {
+                    data_type = .Float;
+                } else if (token.type == .DoubleKeyword) {
+                    data_type = .Double;
                 } else if (token.type == .VoidKeyword) {
                     data_type = .Void;
                 }
@@ -111,6 +115,7 @@ pub const StmtParser = struct {
                     node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
                     if (expr.type == .Number) {
                         node.init_value = expr.value;
+                        node.finit_value = expr.fvalue;
                     }
                 } else {
                     node = try self.base.allocator.create(Node);

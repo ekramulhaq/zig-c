@@ -1,0 +1,26 @@
+int main() {
+    double a = 10.5;
+    double b = 2.0;
+    
+    double c = a + b; // 12.5
+    double d = a - b; // 8.5
+    double e = a * b; // 21.0
+    double f = a / b; // 5.25
+    
+    if (c != 12.5) return 1;
+    if (d != 8.5) return 2;
+    if (e != 21.0) return 3;
+    if (f != 5.25) return 4;
+    
+    float g = 1.0;
+    g++;
+    if (g != 2.0) return 5;
+    
+    int h = (int)a; // 10
+    if (h != 10) return 6;
+    
+    double i = (double)h; // 10.0
+    if (i != 10.0) return 7;
+
+    return 0;
+}

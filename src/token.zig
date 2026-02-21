@@ -61,6 +61,8 @@ pub const TokenType = enum {
     // Keywords
     IntKeyword,
     CharKeyword,
+    FloatKeyword,
+    DoubleKeyword,
     VoidKeyword,
     ReturnKeyword,
     IfKeyword,
@@ -80,6 +82,7 @@ pub const TokenType = enum {
     
     // Literals
     StringLiteral,
+    FloatLiteral,
     
     EOF,
 };

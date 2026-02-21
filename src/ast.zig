@@ -40,7 +40,13 @@ pub const NodeType = enum {
 pub const DataType = enum {
     Int,
     Char,
+    Float,
+    Double,
     Void,
+
+    pub fn isFloat(self: DataType) bool {
+        return self == .Float or self == .Double;
+    }
 };
 
 pub const Type = struct {
@@ -55,6 +61,7 @@ pub const Node = struct {
     data_type: DataType = .Int,
     is_pointer: bool = false,
     value: ?i64 = null,
+    fvalue: ?f64 = null,
     name: ?[]const u8 = null,
     op: ?TokenType = null,
     left: ?*Node = null,
@@ -73,6 +80,7 @@ pub const Node = struct {
     is_prototype: bool = false,
     data: ?[]const u8 = null, // For string literals
     init_value: ?i64 = null, // For global initializers
+    finit_value: ?f64 = null, // For global float initializers
     members: ?[]*Node = null, // For struct definitions
     struct_name: ?[]const u8 = null, // For member access and struct variables
 
@@ -83,6 +91,7 @@ pub const Node = struct {
         std.debug.print("- {s}", .{@tagName(self.type)});
         if (self.name) |name| std.debug.print(" name='{s}'", .{name});
         if (self.value) |val| std.debug.print(" value={}", .{val});
+        if (self.fvalue) |fval| std.debug.print(" fvalue={}", .{fval});
         if (self.op) |op| std.debug.print(" op={s}", .{@tagName(op)});
         if (self.struct_name) |sn| std.debug.print(" struct='{s}'", .{sn});
         std.debug.print("\n", .{});

@@ -87,6 +87,7 @@ EXAMPLES=(
     "examples/sizeof.simple:42"
     "examples/preprocessor.simple:44"
     "examples/type_cast.simple:0"
+    "examples/float_math.simple:0"
 )
 
 TOTAL_PASS=0

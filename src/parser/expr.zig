@@ -224,7 +224,7 @@ pub const ExprParser = struct {
                     const next_token = self.base.tokens[next_idx];
                     var is_cast = false;
                     switch (next_token.type) {
-                        .IntKeyword, .CharKeyword, .VoidKeyword, .StructKeyword, .EnumKeyword => is_cast = true,
+                        .IntKeyword, .CharKeyword, .FloatKeyword, .DoubleKeyword, .VoidKeyword, .StructKeyword, .EnumKeyword => is_cast = true,
                         .Identifier => {
                              if (self.base.type_system.typedefs.contains(next_token.value)) {
                                  is_cast = true;
@@ -308,7 +308,11 @@ pub const ExprParser = struct {
         self.base.advance();
         if (token.type == .Number) {
             const node = try self.base.allocator.create(Node);
-            node.* = Node{ .type = .Number, .value = try std.fmt.parseInt(i64, token.value, 10) };
+            node.* = Node{ .type = .Number, .value = try std.fmt.parseInt(i64, token.value, 10), .data_type = .Int };
+            return node;
+        } else if (token.type == .FloatLiteral) {
+            const node = try self.base.allocator.create(Node);
+            node.* = Node{ .type = .Number, .fvalue = try std.fmt.parseFloat(f64, token.value), .data_type = .Double };
             return node;
         } else if (token.type == .Identifier) {
             if (self.base.type_system.enums.get(token.value)) |val| {
