@@ -4,12 +4,14 @@ const common = @import("common.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const codegen = @import("codegen.zig");
+const optimizer = @import("optimizer.zig");
 
 const Arch = common.Arch;
 const Lexer = lexer.Lexer;
 const Token = lexer.Token;
 const Parser = parser.Parser;
 const CodeGen = codegen.CodeGen;
+const Optimizer = optimizer.Optimizer;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -51,6 +53,9 @@ pub fn main() !void {
 
     var par = Parser.init(try tokens.toOwnedSlice(), allocator);
     const ast = try par.parseProgram();
+
+    var opt = Optimizer.init(allocator);
+    opt.optimize(ast);
 
     const file = try std.fs.cwd().createFile("out.asm", .{});
     defer file.close();

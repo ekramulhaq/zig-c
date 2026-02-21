@@ -1,0 +1,8 @@
+int main() {
+    int x = 10 + 20 * 2; // Should fold to 50
+    int y = !0; // Should fold to 1
+    if (1 < 2) { // Condition should fold to 1
+        return x + y; // 51
+    }
+    return 0;
+}
