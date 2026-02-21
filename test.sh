@@ -79,6 +79,10 @@ EXAMPLES=(
     "examples/postfix.simple:42"
     "examples/ternary.simple:42"
     "examples/switch.simple:42"
+    "examples/bubble_sort.simple:42"
+    "examples/binary_search.simple:42"
+    "examples/linked_list.simple:42"
+    "examples/bit_counting.simple:42"
 )
 
 TOTAL_PASS=0

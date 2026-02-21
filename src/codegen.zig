@@ -1,19 +1,25 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
+const type_system = @import("type_system.zig");
 
 const Node = ast.Node;
 const Arch = common.Arch;
+const TypeSystem = type_system.TypeSystem;
 
 const Global = struct {
     size: i32,
     init_value: ?i64,
     data_type: ast.DataType = .Int,
+    is_pointer: bool = false,
+    struct_name: ?[]const u8 = null,
 };
 
 const LocalVar = struct {
     offset: i32,
     data_type: ast.DataType,
+    is_pointer: bool = false,
+    struct_name: ?[]const u8 = null,
 };
 
 /// CodeGen converts an AST into assembly code.
@@ -22,7 +28,7 @@ pub const CodeGen = struct {
     label_count: usize,
     vars: std.StringHashMap(LocalVar),
     globals: std.StringHashMap(Global),
-    struct_layouts: std.StringHashMap(std.StringHashMap(i32)), // struct name -> member name -> offset
+    type_system: TypeSystem,
     strings: std.ArrayList([]const u8),
     stack_pos: i32,
     temp_stack_pos: i32,
@@ -32,13 +38,13 @@ pub const CodeGen = struct {
     allocator: std.mem.Allocator,
 
     /// Initializes a new CodeGen with the given writer, allocator, and target architecture.
-    pub fn init(writer: std.fs.File.Writer, allocator: std.mem.Allocator, arch: Arch) CodeGen {
+    pub fn init(writer: std.fs.File.Writer, allocator: std.mem.Allocator, arch: Arch, ts: TypeSystem) CodeGen {
         return CodeGen{
             .writer = writer,
             .label_count = 0,
             .vars = std.StringHashMap(LocalVar).init(allocator),
             .globals = std.StringHashMap(Global).init(allocator),
-            .struct_layouts = std.StringHashMap(std.StringHashMap(i32)).init(allocator),
+            .type_system = ts,
             .strings = std.ArrayList([]const u8).init(allocator),
             .stack_pos = 0,
             .temp_stack_pos = -1024, // Temps start at -1024 to avoid overlap with locals
@@ -99,10 +105,10 @@ pub const CodeGen = struct {
         return label;
     }
 
-    fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType) !LocalVar {
+    fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType, is_pointer: bool, struct_name: ?[]const u8) !LocalVar {
         if (self.vars.get(name)) |local| return local;
         self.stack_pos -= size;
-        const local = LocalVar{ .offset = self.stack_pos, .data_type = data_type };
+        const local = LocalVar{ .offset = self.stack_pos, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
         try self.vars.put(name, local);
         return local;
     }
@@ -134,7 +140,21 @@ pub const CodeGen = struct {
                 try self.genExpr(node.right.?);
             },
             .Index => {
-                try self.genAddr(node.left.?);
+                // If it's identifier[index], we need to check if identifier is a pointer or array
+                var is_ptr = false;
+                if (node.left.?.type == .Identifier) {
+                    if (self.vars.get(node.left.?.name.?)) |local| {
+                        is_ptr = local.is_pointer;
+                    } else if (self.globals.get(node.left.?.name.?)) |global| {
+                        is_ptr = global.is_pointer;
+                    }
+                }
+
+                if (is_ptr) {
+                    try self.genExpr(node.left.?); // Get the pointer value
+                } else {
+                    try self.genAddr(node.left.?); // Get the array address
+                }
                 try self.pushTemp(); // Base address
                 try self.genExpr(node.right.?); // Index
                 if (self.arch == .arm64) {
@@ -149,23 +169,52 @@ pub const CodeGen = struct {
                 }
             },
             .MemberAccess => {
-                var it = self.struct_layouts.valueIterator();
-                var offset: ?i32 = null;
-                while (it.next()) |members| {
-                    if (members.get(node.name.?)) |off| {
-                        offset = off;
-                        break;
+                var s_name: ?[]const u8 = null;
+                // We need to know the struct type of the left side
+                if (node.left.?.type == .Identifier) {
+                    if (self.vars.get(node.left.?.name.?)) |local| {
+                        s_name = local.struct_name;
+                    } else if (self.globals.get(node.left.?.name.?)) |global| {
+                        s_name = global.struct_name;
+                    }
+                } else if (node.left.?.type == .Deref) {
+                    // if it was a->b, parser made it (*a).b
+                    const inner = node.left.?.right.?;
+                    if (inner.type == .Identifier) {
+                        if (self.vars.get(inner.name.?)) |local| {
+                            s_name = local.struct_name;
+                        } else if (self.globals.get(inner.name.?)) |global| {
+                            s_name = global.struct_name;
+                        }
                     }
                 }
-                
-                if (offset) |off| {
-                    try self.genAddr(node.left.?);
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    add x0, x0, #{}\n", .{off});
-                    } else {
-                        try self.writer.print("    addq ${}, %rax\n", .{off});
+
+                // Fallback: search all layouts if type info is missing (for nested a->b->c)
+                if (s_name == null) {
+                    var it = self.type_system.structs.iterator();
+                    while (it.next()) |entry| {
+                        if (entry.value_ptr.*.members.contains(node.name.?)) {
+                            s_name = entry.key_ptr.*;
+                            break;
+                        }
                     }
-                } else @panic("Unknown struct member");
+                }
+
+                if (s_name) |sn| {
+                    if (self.type_system.structs.get(sn)) |layout| {
+                        if (layout.members.get(node.name.?)) |m| {
+                            const off = m.offset;
+                            try self.genAddr(node.left.?);
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    add x0, x0, #{}\n", .{off});
+                            } else {
+                                try self.writer.print("    addq ${}, %rax\n", .{off});
+                            }
+                            return;
+                        }
+                    }
+                }
+                @panic("Unknown struct member or type");
             },
             else => @panic("Cannot take address of this node type"),
         }
@@ -218,7 +267,8 @@ pub const CodeGen = struct {
                     const is_global = self.globals.contains(name);
                     var offset: i32 = 0;
                     if (!is_global) {
-                        const local = try self.registerVar(name, 8, node.data_type);
+                        const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+                        const local = try self.registerVar(name, size, node.data_type, node.is_pointer, node.struct_name);
                         offset = local.offset;
                     }
                     if (node.op == null or node.op.? == .Equal) {
@@ -556,18 +606,20 @@ pub const CodeGen = struct {
     fn genStmt(self: *CodeGen, node: *Node) anyerror!void {
         switch (node.type) {
             .VarDecl => {
+                const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
                 if (node.right) |right| {
                     try self.genExpr(right);
-                    const local = try self.registerVar(node.name.?, 8, node.data_type);
+                    const local = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, node.struct_name);
                     try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", local.offset);
                 } else {
-                    _ = try self.registerVar(node.name.?, 8, node.data_type);
+                    _ = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, node.struct_name);
                 }
             },
             .ArrayDecl => {
-                _ = try self.registerVar(node.name.?, @intCast(node.value.? * 8), node.data_type);
+                const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+                _ = try self.registerVar(node.name.?, @intCast(node.value.? * element_size), node.data_type, node.is_pointer, node.struct_name);
             },
-            .Assignment, .FunctionCall => {
+            .Assignment, .FunctionCall, .BinaryOp, .Comparison, .LogicalOp, .UnaryOp, .PostfixOp, .Number, .Identifier, .String, .Index, .MemberAccess, .Deref, .AddressOf, .Ternary => {
                 try self.genExpr(node);
             },
             .Return => {
@@ -712,7 +764,7 @@ pub const CodeGen = struct {
                     try self.writer.print("{s}:\n", .{label});
                 }
             },
-            .StructDecl => {},
+            .StructDecl, .EnumDecl => {},
             else => @panic("Invalid statement node"),
         }
     }
@@ -730,7 +782,10 @@ pub const CodeGen = struct {
         if (node.params) |params| {
             for (params, 0..) |param, idx| {
                 const param_type = if (node.params_types) |pts| pts[idx] else .Int;
-                const local = try self.registerVar(param, 8, param_type);
+                const is_ptr = if (node.params_is_pointer) |pips| pips[idx] else false;
+                const s_name = if (node.params_struct_names) |psns| psns[idx] else null;
+                const size = self.type_system.getTypeSize(param_type, is_ptr, s_name);
+                const local = try self.registerVar(param, size, param_type, is_ptr, s_name);
                 if (self.arch == .arm64) {
                     try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, local.offset});
                 } else {
@@ -751,21 +806,14 @@ pub const CodeGen = struct {
 
     /// Generates code for the entire program.
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
+        // Second pass: globals
         for (nodes) |node| {
             if (node.type == .VarDecl) {
-                try self.globals.put(node.name.?, .{ .size = 8, .init_value = node.init_value, .data_type = node.data_type });
+                const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+                try self.globals.put(node.name.?, .{ .size = size, .init_value = node.init_value, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
             } else if (node.type == .ArrayDecl) {
-                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * 8), .init_value = null, .data_type = node.data_type });
-            } else if (node.type == .StructDecl) {
-                var layout = std.StringHashMap(i32).init(self.allocator);
-                var offset: i32 = 0;
-                for (node.members.?) |member| {
-                    if (member.type == .VarDecl) {
-                        try layout.put(member.name.?, offset);
-                        offset += 8;
-                    }
-                }
-                try self.struct_layouts.put(node.name.?, layout);
+                const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
+                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * element_size), .init_value = null, .data_type = node.data_type, .is_pointer = node.is_pointer, .struct_name = node.struct_name });
             }
         }
         try self.writer.print(".text\n", .{});

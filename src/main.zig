@@ -71,7 +71,7 @@ pub fn main() !void {
 
     const file = try std.fs.cwd().createFile("out.asm", .{});
     defer file.close();
-    var cg = CodeGen.init(file.writer(), allocator, arch);
+    var cg = CodeGen.init(file.writer(), allocator, arch, par.type_system);
     cg.genProgram(ast) catch |err| {
         std.debug.print("CodeGen Error: {}\n", .{err});
         std.process.exit(1);

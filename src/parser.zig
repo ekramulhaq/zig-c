@@ -1,20 +1,20 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const type_system = @import("type_system.zig");
 
 const Token = lexer.Token;
 const TokenType = lexer.TokenType;
 const Node = ast.Node;
 const NodeType = ast.NodeType;
+const TypeSystem = type_system.TypeSystem;
 
 /// Parser converts a stream of tokens into an Abstract Syntax Tree (AST).
 pub const Parser = struct {
     tokens: []Token,
     pos: usize,
     allocator: std.mem.Allocator,
-    structs: std.StringHashMap([]*Node), // struct name -> member declarations
-    typedefs: std.StringHashMap(ast.DataType), // alias -> original type
-    enums: std.StringHashMap(i64), // enum member -> value
+    type_system: TypeSystem,
 
     /// Initializes a new Parser with the given tokens.
     pub fn init(tokens: []Token, allocator: std.mem.Allocator) Parser {
@@ -22,9 +22,7 @@ pub const Parser = struct {
             .tokens = tokens,
             .pos = 0,
             .allocator = allocator,
-            .structs = std.StringHashMap([]*Node).init(allocator),
-            .typedefs = std.StringHashMap(ast.DataType).init(allocator),
-            .enums = std.StringHashMap(i64).init(allocator),
+            .type_system = TypeSystem.init(allocator),
         };
     }
 
@@ -312,27 +310,27 @@ pub const Parser = struct {
         return token.value;
     }
 
-    fn parseType(self: *Parser) anyerror!ast.DataType {
+    fn parseType(self: *Parser) anyerror!ast.Type {
         const token = self.current() orelse return error.UnexpectedEOF;
         if (token.type == .IntKeyword) {
             self.advance();
-            return .Int;
+            return .{ .id = .Int };
         } else if (token.type == .CharKeyword) {
             self.advance();
-            return .Char;
+            return .{ .id = .Char };
         } else if (token.type == .VoidKeyword) {
             self.advance();
-            return .Void;
+            return .{ .id = .Void };
         } else if (token.type == .Identifier) {
-            if (self.typedefs.get(token.value)) |dt| {
+            if (self.type_system.typedefs.get(token.value)) |t| {
                 self.advance();
-                return dt;
+                return t;
             }
         }
         return self.errorAt(token, "Expected type name");
     }
 
-    fn parseEnum(self: *Parser) anyerror!*Node {
+    fn parseEnum(self: *Parser) anyerror!void {
         try self.expect(.EnumKeyword, "Expected 'enum'");
         // Skip enum name if present
         if (self.current()) |t| {
@@ -348,15 +346,12 @@ pub const Parser = struct {
                 if (num.type != .Number) return self.errorAt(t, "Enum value must be constant");
                 val = num.value.?;
             }
-            try self.enums.put(ident, val);
+            try self.type_system.enums.put(ident, val);
             val += 1;
             _ = self.consume(.Comma);
         }
         try self.expect(.RBrace, "Expected } after enum members");
         try self.expect(.Semicolon, "Expected ; after enum");
-        const node = try self.allocator.create(Node);
-        node.* = Node{ .type = .EnumDecl };
-        return node;
     }
 
     fn parseFactor(self: *Parser) anyerror!*Node {
@@ -367,7 +362,7 @@ pub const Parser = struct {
             node.* = Node{ .type = .Number, .value = try std.fmt.parseInt(i64, token.value, 10) };
             return node;
         } else if (token.type == .Identifier) {
-            if (self.enums.get(token.value)) |val| {
+            if (self.type_system.enums.get(token.value)) |val| {
                 const node = try self.allocator.create(Node);
                 node.* = Node{ .type = .Number, .value = val };
                 return node;
@@ -405,18 +400,22 @@ pub const Parser = struct {
             var body = std.ArrayList(*Node).init(self.allocator);
             while (self.current()) |t| {
                 if (t.type == .RBrace) break;
-                try body.append(try self.parseStmt());
+                if (try self.parseStmt()) |stmt| {
+                    try body.append(stmt);
+                }
             }
             try self.expect(.RBrace, "Expected } after block");
             return try body.toOwnedSlice();
         } else {
             var body = std.ArrayList(*Node).init(self.allocator);
-            try body.append(try self.parseStmt());
+            if (try self.parseStmt()) |stmt| {
+                try body.append(stmt);
+            }
             return try body.toOwnedSlice();
         }
     }
 
-    fn parseStmt(self: *Parser) anyerror!*Node {
+    fn parseStmt(self: *Parser) anyerror!?*Node {
         const token = self.current() orelse return error.UnexpectedEOF;
         if (token.type == .TypedefKeyword) {
             self.advance();
@@ -424,41 +423,48 @@ pub const Parser = struct {
             while (self.consume(.Star)) {}
             const alias = try self.expectIdentifier("Expected alias name after typedef");
             try self.expect(.Semicolon, "Expected ; after typedef");
-            try self.typedefs.put(alias, original_type);
-            const node = try self.allocator.create(Node);
-            node.* = Node{ .type = .EnumDecl }; // Just a dummy node
-            return node;
+            try self.type_system.typedefs.put(alias, original_type);
+            return null;
         }
         if (token.type == .EnumKeyword) {
             // Check if it's enum declaration or variable declaration
             const i = self.pos + 2;
             if (i < self.tokens.len and self.tokens[i].type == .LBrace) {
-                return self.parseEnum();
+                _ = try self.parseEnum();
+                return null;
             }
         }
-        var is_typedef_alias = false;
+        var alias_type: ?ast.Type = null;
         if (token.type == .Identifier) {
-            if (self.typedefs.contains(token.value)) {
-                is_typedef_alias = true;
-            }
+            alias_type = self.type_system.typedefs.get(token.value);
         }
 
-        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or is_typedef_alias) {
+        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or alias_type != null) {
             const is_struct = (token.type == .StructKeyword);
             const is_enum = (token.type == .EnumKeyword);
             var data_type: ast.DataType = .Int;
-            if (token.type == .CharKeyword) {
-                data_type = .Char;
-            } else if (is_typedef_alias) {
-                data_type = self.typedefs.get(token.value).?;
-            }
-            self.advance();
             var struct_name: ?[]const u8 = null;
-            if (is_struct or is_enum) {
-                struct_name = try self.expectIdentifier("Expected name");
+
+            if (alias_type) |at| {
+                data_type = at.id;
+                struct_name = at.struct_name;
+                self.advance();
+            } else {
+                if (token.type == .CharKeyword) {
+                    data_type = .Char;
+                } else if (token.type == .VoidKeyword) {
+                    data_type = .Void;
+                }
+                self.advance();
+                if (is_struct or is_enum) {
+                    struct_name = try self.expectIdentifier("Expected name");
+                }
             }
             
-            while (self.consume(.Star)) {}
+            var pointer_level: usize = 0;
+            while (self.consume(.Star)) { pointer_level += 1; }
+            const is_pointer = (pointer_level > 0);
+
             const ident = self.current() orelse return self.errorAt(token, "Expected identifier");
             if (ident.type != .Identifier) return self.errorAt(ident, "Expected identifier");
             self.advance();
@@ -469,7 +475,7 @@ pub const Parser = struct {
                 try self.expect(.RBracket, "Expected ] after array size");
                 try self.expect(.Semicolon, "Expected ; after array declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type };
+                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
                 return node;
             }
             
@@ -477,7 +483,7 @@ pub const Parser = struct {
                 const expr = try self.parseExpr();
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type };
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
                 if (expr.type == .Number) {
                     node.init_value = expr.value;
                 }
@@ -485,7 +491,7 @@ pub const Parser = struct {
             } else {
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type };
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
                 // If it's a struct, we should probably mark it. For now, our compiler treats all vars as 8 bytes.
                 return node;
             }
@@ -597,13 +603,15 @@ pub const Parser = struct {
         var members = std.ArrayList(*Node).init(self.allocator);
         while (self.current()) |t| {
             if (t.type == .RBrace) break;
-            try members.append(try self.parseStmt());
+            if (try self.parseStmt()) |stmt| {
+                try members.append(stmt);
+            }
         }
         try self.expect(.RBrace, "Expected '}' after struct members");
         try self.expect(.Semicolon, "Expected ';' after struct definition");
         
         const member_slice = try members.toOwnedSlice();
-        try self.structs.put(ident, member_slice);
+        try self.type_system.addStruct(ident, member_slice);
         
         const node = try self.allocator.create(Node);
         node.* = Node{ .type = .StructDecl, .name = ident, .members = member_slice };
@@ -612,32 +620,47 @@ pub const Parser = struct {
 
     fn parseFunction(self: *Parser) anyerror!*Node {
         const ret_token = self.current() orelse return error.UnexpectedEOF;
-        if (ret_token.type != .IntKeyword and ret_token.type != .CharKeyword and ret_token.type != .VoidKeyword) {
-            return self.errorAt(ret_token, "Expected return type (int, char, or void)");
-        }
         var ret_type: ast.DataType = .Int;
-        if (ret_token.type == .CharKeyword) {
-            ret_type = .Char;
-        } else if (ret_token.type == .VoidKeyword) {
-            ret_type = .Void;
+        var ret_struct_name: ?[]const u8 = null;
+        if (ret_token.type == .StructKeyword) {
+            self.advance();
+            ret_struct_name = try self.expectIdentifier("Expected struct name");
+        } else {
+            const t = try self.parseType();
+            ret_type = t.id;
+            ret_struct_name = t.struct_name;
         }
-        self.advance();
 
-        while (self.consume(.Star)) {}
+        var ret_pointer_level: usize = 0;
+        while (self.consume(.Star)) { ret_pointer_level += 1; }
+        const ret_is_pointer = (ret_pointer_level > 0);
+
         const ident = try self.expectIdentifier("Expected function name");
         try self.expect(.LParen, "Expected ( after function name");
         var params = std.ArrayList([]const u8).init(self.allocator);
         var params_types = std.ArrayList(ast.DataType).init(self.allocator);
+        var params_is_pointer = std.ArrayList(bool).init(self.allocator);
+        var params_struct_names = std.ArrayList(?[]const u8).init(self.allocator);
         if (!self.consume(.RParen)) {
             while (true) {
                 const param_type_token = self.current() orelse return error.UnexpectedEOF;
-                if (param_type_token.type != .IntKeyword and param_type_token.type != .CharKeyword) {
-                    return self.errorAt(param_type_token, "Expected parameter type (int or char)");
+                var param_type: ast.DataType = .Int;
+                var param_struct_name: ?[]const u8 = null;
+                if (param_type_token.type == .StructKeyword) {
+                    self.advance();
+                    param_struct_name = try self.expectIdentifier("Expected struct name");
+                } else {
+                    const t = try self.parseType();
+                    param_type = t.id;
+                    param_struct_name = t.struct_name;
                 }
-                try params_types.append(if (param_type_token.type == .CharKeyword) .Char else .Int);
-                self.advance();
+                try params_types.append(param_type);
+                try params_struct_names.append(param_struct_name);
 
-                while (self.consume(.Star)) {}
+                var param_pointer_level: usize = 0;
+                while (self.consume(.Star)) { param_pointer_level += 1; }
+                try params_is_pointer.append(param_pointer_level > 0);
+
                 try params.append(try self.expectIdentifier("Expected parameter name"));
                 if (!self.consume(.Comma)) break;
             }
@@ -647,11 +670,13 @@ pub const Parser = struct {
         var body = std.ArrayList(*Node).init(self.allocator);
         while (self.current()) |t| {
             if (t.type == .RBrace) break;
-            try body.append(try self.parseStmt());
+            if (try self.parseStmt()) |stmt| {
+                try body.append(stmt);
+            }
         }
         try self.expect(.RBrace, "Expected } to end function body");
         const node = try self.allocator.create(Node);
-        node.* = Node{ .type = .Function, .data_type = ret_type, .name = ident, .params = try params.toOwnedSlice(), .params_types = try params_types.toOwnedSlice(), .body = try body.toOwnedSlice() };
+        node.* = Node{ .type = .Function, .data_type = ret_type, .is_pointer = ret_is_pointer, .struct_name = ret_struct_name, .name = ident, .params = try params.toOwnedSlice(), .params_types = try params_types.toOwnedSlice(), .params_is_pointer = try params_is_pointer.toOwnedSlice(), .params_struct_names = try params_struct_names.toOwnedSlice(), .body = try body.toOwnedSlice() };
         return node;
     }
 
@@ -680,7 +705,9 @@ pub const Parser = struct {
             if (i < self.tokens.len and self.tokens[i].type == .LParen) {
                 try items.append(try self.parseFunction());
             } else {
-                try items.append(try self.parseStmt());
+                if (try self.parseStmt()) |stmt| {
+                    try items.append(stmt);
+                }
             }
         }
         return try items.toOwnedSlice();

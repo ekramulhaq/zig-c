@@ -1,0 +1,27 @@
+int count_set_bits(int n) {
+    int count = 0;
+    while (n > 0) {
+        if (n & 1) {
+            count++;
+        }
+        n = n >> 1;
+    }
+    return count;
+}
+
+int main() {
+    int n1 = 7;  // 0111 -> 3
+    int n2 = 10; // 1010 -> 2
+    int n3 = 42; // 101010 -> 3
+    int n4 = 255; // 11111111 -> 8
+
+    int res1 = count_set_bits(n1);
+    int res2 = count_set_bits(n2);
+    int res3 = count_set_bits(n3);
+    int res4 = count_set_bits(n4);
+
+    if (res1 == 3 && res2 == 2 && res3 == 3 && res4 == 8) {
+        return 42;
+    }
+    return 0;
+}

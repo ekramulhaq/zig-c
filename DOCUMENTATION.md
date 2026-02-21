@@ -95,12 +95,7 @@ The project includes an automated test suite (`test.sh`) and several example pro
 - `binary_search.simple`: Demonstrates recursion and array indexing.
 
 ### Known Issues and Failing Tests
-As of the latest build, the following tests are failing:
-
-1.  **`linked_list.simple`**:
-    - **Status**: Failing (Returns 50 instead of 42).
-    - **Reason**: Memory corruption/Pointer calculation error. Nested member access (e.g., `head->next->next`) currently miscalculates offsets because the AST lacks full type-checking during the CodeGen phase.
-    - **Resolution Plan**: Implement a more robust semantic analysis pass to decorate the AST with resolved type information before it reaches the backend.
+All test cases are currently passing.
 
 ---
 

@@ -1,0 +1,30 @@
+int arr[10];
+
+int binary_search(int low, int high, int target) {
+    if (low > high) return -1;
+    
+    int mid = low + (high - low) / 2;
+    
+    if (arr[mid] == target) return mid;
+    
+    if (arr[mid] > target) {
+        return binary_search(low, mid - 1, target);
+    } else {
+        return binary_search(mid + 1, high, target);
+    }
+}
+
+int main() {
+    for (int i = 0; i < 10; i++) {
+        arr[i] = (i + 1) * 10; // 10, 20, ..., 100
+    }
+
+    int idx1 = binary_search(0, 9, 30);  // Should be 2
+    int idx2 = binary_search(0, 9, 70);  // Should be 6
+    int idx3 = binary_search(0, 9, 110); // Should be -1
+
+    if (idx1 == 2 && idx2 == 6 && idx3 == -1) {
+        return 42;
+    }
+    return 0;
+}

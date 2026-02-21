@@ -1,0 +1,44 @@
+struct Node {
+    int val;
+    struct Node *next;
+};
+
+struct Node n1;
+struct Node n2;
+struct Node n3;
+int pool_ptr = 0;
+
+struct Node *alloc_node(int val) {
+    struct Node *res = 0;
+    if (pool_ptr == 0) {
+        res = &n1;
+    } else if (pool_ptr == 1) {
+        res = &n2;
+    } else {
+        res = &n3;
+    }
+    
+    pool_ptr = pool_ptr + 1;
+    res->val = val;
+    res->next = 0;
+    return res;
+}
+
+int main() {
+    struct Node *head = alloc_node(10);
+    head->next = alloc_node(20);
+    head->next->next = alloc_node(12);
+
+    // Sum values: 10 + 20 + 12 = 42
+    int sum = 0;
+    struct Node *curr = head;
+    while (curr != 0) {
+        sum = sum + curr->val;
+        curr = curr->next;
+    }
+
+    if (sum == 42) {
+        return 42;
+    }
+    return sum;
+}

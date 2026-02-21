@@ -40,10 +40,17 @@ pub const DataType = enum {
     Void,
 };
 
+pub const Type = struct {
+    id: DataType,
+    is_pointer: bool = false,
+    struct_name: ?[]const u8 = null,
+};
+
 /// Represents a node in the Abstract Syntax Tree.
 pub const Node = struct {
     type: NodeType,
     data_type: DataType = .Int,
+    is_pointer: bool = false,
     value: ?i64 = null,
     name: ?[]const u8 = null,
     op: ?TokenType = null,
@@ -57,7 +64,10 @@ pub const Node = struct {
     args: ?[]*Node = null,
     params: ?[][]const u8 = null,
     params_types: ?[]DataType = null,
+    params_is_pointer: ?[]bool = null,
+    params_struct_names: ?[]?[]const u8 = null,
     data: ?[]const u8 = null, // For string literals
     init_value: ?i64 = null, // For global initializers
     members: ?[]*Node = null, // For struct definitions
+    struct_name: ?[]const u8 = null, // For member access and struct variables
 };

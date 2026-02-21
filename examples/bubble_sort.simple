@@ -1,0 +1,30 @@
+int main() {
+    int arr[10];
+    arr[0] = 10; arr[1] = 9; arr[2] = 8; arr[3] = 7; arr[4] = 6;
+    arr[5] = 5; arr[6] = 4; arr[7] = 3; arr[8] = 2; arr[9] = 1;
+
+    // Bubble Sort
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9 - i; j++) {
+            if (arr[j] > arr[j + 1]) {
+                int temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+
+    // Verify sorted
+    int sum = 0;
+    for (int i = 0; i < 10; i++) {
+        sum = sum + arr[i];
+        if (i > 0) {
+            if (arr[i] < arr[i-1]) return 0;
+        }
+    }
+
+    if (sum == 55 && arr[0] == 1 && arr[9] == 10) {
+        return 42;
+    }
+    return 0;
+}
