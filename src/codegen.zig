@@ -537,6 +537,16 @@ pub const CodeGen = struct {
                 try self.genExpr(node.right.?);
                 try self.writer.print("{s}:\n", .{label_end});
             },
+            .TypeCast => {
+                try self.genExpr(node.right.?);
+                if (!node.is_pointer and node.data_type == .Char) {
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    and x0, x0, #0xFF\n", .{});
+                    } else {
+                        try self.writer.print("    andq $0xFF, %rax\n", .{});
+                    }
+                }
+            },
             .UnaryOp => {
                 if (node.op.? == .PlusPlus or node.op.? == .MinusMinus) {
                     try self.genAddr(node.right.?);

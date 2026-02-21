@@ -66,7 +66,7 @@ pub const StmtParser = struct {
             alias_type = self.base.type_system.typedefs.get(token.value);
         }
 
-        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or alias_type != null) {
+        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .VoidKeyword or token.type == .StructKeyword or token.type == .EnumKeyword or alias_type != null) {
             const is_struct = (token.type == .StructKeyword);
             const is_enum = (token.type == .EnumKeyword);
             var data_type: ast.DataType = .Int;

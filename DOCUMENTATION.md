@@ -54,6 +54,7 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 - **Logical**: `&&, ||, !`.
 - **Ternary**: `cond ? then : else`.
 - **Unary**: `sizeof(type)`, `&` (address-of), `*` (dereference).
+- **Type Cast**: `(type)expression` (e.g., `(char)x`, `(void *)ptr`).
 - **Assignment**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=`).
 - **Memory**: `->` (arrow access), `.` (dot access).
 
@@ -71,6 +72,9 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 The compiler includes a built-in preprocessor that handles the following directives:
 - **`#include "file.h"`**: Includes a local header file. Searches in the current directory, then in system include directories.
 - **`#include <file.h>`**: Includes a system header file. Searches in the `include/` directory and any directories specified with `-I`.
+- **`#define NAME value`**: Defines an object-like macro.
+- **`#undef NAME`**: Undefines a macro.
+- **Conditional Compilation**: Supports `#ifdef`, `#ifndef`, `#else`, and `#endif` for conditional code inclusion and header guards.
 
 The compiler prevents multiple inclusions of the same file by tracking absolute file paths.
 

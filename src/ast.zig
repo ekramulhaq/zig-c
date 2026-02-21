@@ -20,6 +20,7 @@ pub const NodeType = enum {
     Comparison,
     LogicalOp,
     UnaryOp,
+    TypeCast,
     PostfixOp,
     Function,
     FunctionCall,

@@ -217,6 +217,44 @@ pub const ExprParser = struct {
             if (token.type == .SizeofKeyword) {
                 return self.parseSizeof();
             }
+            // Check for cast: (type) expr
+            if (token.type == .LParen) {
+                const next_idx = self.base.pos + 1;
+                if (next_idx < self.base.tokens.len) {
+                    const next_token = self.base.tokens[next_idx];
+                    var is_cast = false;
+                    switch (next_token.type) {
+                        .IntKeyword, .CharKeyword, .VoidKeyword, .StructKeyword, .EnumKeyword => is_cast = true,
+                        .Identifier => {
+                             if (self.base.type_system.typedefs.contains(next_token.value)) {
+                                 is_cast = true;
+                             }
+                        },
+                        else => {},
+                    }
+
+                    if (is_cast) {
+                        self.base.advance(); // consume (
+                        const target_type = try self.base.parseType();
+                        
+                        var pointer_level: usize = 0;
+                        while (self.base.consume(.Star)) { pointer_level += 1; }
+                        const is_ptr = pointer_level > 0;
+
+                        try self.base.expect(.RParen, "Expected ) after cast");
+                        const right = try self.parseUnary(); // Recursive
+                        const node = try self.base.allocator.create(Node);
+                        node.* = Node{ 
+                            .type = .TypeCast, 
+                            .data_type = target_type.id, 
+                            .is_pointer = is_ptr, 
+                            .struct_name = target_type.struct_name,
+                            .right = right 
+                        };
+                        return node;
+                    }
+                }
+            }
         }
         return try self.parsePostfix();
     }

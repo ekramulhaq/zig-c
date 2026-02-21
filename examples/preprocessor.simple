@@ -1,0 +1,25 @@
+#include "guarded_header.h"
+#include "guarded_header.h"
+
+#define CONSTANT 42
+#define NEG -1
+
+#ifdef CONSTANT
+int x = CONSTANT;
+#endif
+
+#ifndef CONSTANT
+int y = 0;
+#else
+int y = 1;
+#endif
+
+#ifdef UNDEFINED
+int z = 0;
+#else
+int z = 2;
+#endif
+
+int main() {
+    return x + y + z + NEG;
+}

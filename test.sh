@@ -85,6 +85,8 @@ EXAMPLES=(
     "examples/bit_counting.simple:42"
     "examples/multi_decl.simple:42"
     "examples/sizeof.simple:42"
+    "examples/preprocessor.simple:44"
+    "examples/type_cast.simple:0"
 )
 
 TOTAL_PASS=0

@@ -1,0 +1,14 @@
+int main() {
+    int x = 257;
+    char c = (char)x;
+    int y = (int)c;
+    if (y != 1) return 1;
+
+    void *p = (void *)x;
+    int *q = (int *)p;
+    
+    int z = (int)(char)x;
+    if (z != 1) return 2;
+    
+    return 0;
+}
