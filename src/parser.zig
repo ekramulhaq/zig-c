@@ -53,15 +53,18 @@ pub const Parser = struct {
         if (self.current()) |token| {
             switch (token.type) {
                 .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => {
-                    if (left.type != .Identifier and left.type != .Deref) @panic("Invalid lvalue for assignment");
+                    if (left.type != .Identifier and left.type != .Deref and left.type != .Index) @panic("Invalid lvalue for assignment");
                     self.advance();
                     const right = try self.parseExpr();
                     const node = try self.allocator.create(Node);
                     if (left.type == .Identifier) {
                         node.* = Node{ .type = .Assignment, .name = left.name, .op = token.type, .right = right };
-                    } else {
-                        // Assignment to dereferenced pointer: *p = val
+                    } else if (left.type == .Deref) {
                         node.* = Node{ .type = .Assignment, .left = left.right, .op = token.type, .right = right };
+                    } else {
+                        // Array indexing: a[i] = val
+                        // Treat as *(a + i) = val
+                        node.* = Node{ .type = .Assignment, .left = left, .op = token.type, .right = right };
                     }
                     return node;
                 },
@@ -213,7 +216,7 @@ pub const Parser = struct {
 
     fn parseUnary(self: *Parser) anyerror!*Node {
         if (self.current()) |token| {
-            if (token.type == .Minus or token.type == .Bang or token.type == .Tilde) {
+            if (token.type == .Minus or token.type == .Bang or token.type == .Tilde or token.type == .PlusPlus or token.type == .MinusMinus) {
                 self.advance();
                 const right = try self.parseUnary();
                 const node = try self.allocator.create(Node);
@@ -235,7 +238,22 @@ pub const Parser = struct {
                 return node;
             }
         }
-        return try self.parseFactor();
+        return try self.parsePostfix();
+    }
+
+    fn parsePostfix(self: *Parser) anyerror!*Node {
+        var node = try self.parseFactor();
+        while (self.current()) |token| {
+            if (token.type == .LBracket) {
+                self.advance();
+                const index = try self.parseExpr();
+                try self.expect(.RBracket, "Expected ] after array index");
+                const new_node = try self.allocator.create(Node);
+                new_node.* = Node{ .type = .Index, .left = node, .right = index };
+                node = new_node;
+            } else break;
+        }
+        return node;
     }
 
     fn parseFactor(self: *Parser) anyerror!*Node {
@@ -283,6 +301,15 @@ pub const Parser = struct {
             const ident = self.current() orelse @panic("Expected identifier");
             if (ident.type != .Identifier) @panic("Expected identifier");
             self.advance();
+            if (self.consume(.LBracket)) {
+                const size_node = try self.parseExpr();
+                if (size_node.type != .Number) @panic("Array size must be a constant number");
+                try self.expect(.RBracket, "Expected ] after array size");
+                try self.expect(.Semicolon, "Expected ; after array declaration");
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value };
+                return node;
+            }
             if (self.consume(.Equal)) {
                 const expr = try self.parseExpr();
                 try self.expect(.Semicolon, "Expected ; after variable declaration");

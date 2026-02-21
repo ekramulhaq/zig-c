@@ -20,6 +20,8 @@ pub const NodeType = enum {
     AddressOf,
     Deref,
     String,
+    ArrayDecl,
+    Index,
 };
 
 /// Represents a node in the Abstract Syntax Tree.

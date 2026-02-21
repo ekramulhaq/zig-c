@@ -61,6 +61,7 @@ EXAMPLES=(
     "examples/globals.simple:42"
     "examples/printf.simple:0"
     "examples/exit.simple:42"
+    "examples/complex.simple:42"
 )
 
 TOTAL_PASS=0

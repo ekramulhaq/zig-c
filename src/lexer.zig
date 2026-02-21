@@ -43,6 +43,10 @@ pub const TokenType = enum {
     RBrace,
     Comma,
     StringLiteral,
+    PlusPlus,
+    MinusMinus,
+    LBracket,
+    RBracket,
     EOF,
 };
 
@@ -90,12 +94,20 @@ pub const Lexer = struct {
                     self.pos += 1;
                     return Token{ .type = .PlusEqual, .value = "+=" };
                 }
+                if (self.pos < self.source.len and self.source[self.pos] == '+') {
+                    self.pos += 1;
+                    return Token{ .type = .PlusPlus, .value = "++" };
+                }
                 return Token{ .type = .Plus, .value = "+" };
             },
             '-' => {
                 if (self.pos < self.source.len and self.source[self.pos] == '=') {
                     self.pos += 1;
                     return Token{ .type = .MinusEqual, .value = "-=" };
+                }
+                if (self.pos < self.source.len and self.source[self.pos] == '-') {
+                    self.pos += 1;
+                    return Token{ .type = .MinusMinus, .value = "--" };
                 }
                 return Token{ .type = .Minus, .value = "-" };
             },
@@ -178,6 +190,8 @@ pub const Lexer = struct {
             '{' => return Token{ .type = .LBrace, .value = "{" },
             '}' => return Token{ .type = .RBrace, .value = "}" },
             ',' => return Token{ .type = .Comma, .value = "," },
+            '[' => return Token{ .type = .LBracket, .value = "[" },
+            ']' => return Token{ .type = .RBracket, .value = "]" },
             '"' => {
                 const start = self.pos;
                 while (self.pos < self.source.len and self.source[self.pos] != '"') {

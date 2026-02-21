@@ -1,0 +1,28 @@
+int main() {
+    int arr[5];
+    arr[0] = 50;
+    arr[1] = 10;
+    arr[2] = 40;
+    arr[3] = 20;
+    arr[4] = 30;
+
+    // Selection Sort
+    for (int i = 0; i < 4; ++i) {
+        int min_idx = i;
+        for (int j = i + 1; j < 5; ++j) {
+            if (arr[j] < arr[min_idx]) {
+                min_idx = j;
+            }
+        }
+        // Swap arr[i] and arr[min_idx]
+        int temp = arr[i];
+        arr[i] = arr[min_idx];
+        arr[min_idx] = temp;
+    }
+
+    // Verify sorted: 10, 20, 30, 40, 50
+    if (arr[0] == 10 && arr[1] == 20 && arr[2] == 30 && arr[3] == 40 && arr[4] == 50) {
+        return 42;
+    }
+    return 0;
+}

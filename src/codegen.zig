@@ -56,12 +56,52 @@ pub const CodeGen = struct {
         return label;
     }
 
-    fn registerVar(self: *CodeGen, name: []const u8) !i32 {
+    fn registerVar(self: *CodeGen, name: []const u8, size: i32) !i32 {
         if (self.vars.get(name)) |offset| return offset;
-        self.stack_pos -= 8;
+        self.stack_pos -= size;
         const offset = self.stack_pos;
         try self.vars.put(name, offset);
         return offset;
+    }
+
+    fn genAddr(self: *CodeGen, node: *Node) anyerror!void {
+        switch (node.type) {
+            .Identifier => {
+                if (self.vars.get(node.name.?)) |offset| {
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    add x0, x29, #{}\n", .{offset});
+                    } else {
+                        try self.writer.print("    leaq {}(%rbp), %rax\n", .{offset});
+                    }
+                } else if (self.globals.contains(node.name.?)) {
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    adrp x0, _{s}@PAGE\n", .{node.name.?});
+                        try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{node.name.?});
+                    } else {
+                        try self.writer.print("    leaq _{s}(%rip), %rax\n", .{node.name.?});
+                    }
+                } else @panic("Undefined variable");
+            },
+            .Deref => {
+                try self.genExpr(node.right.?);
+            },
+            .Index => {
+                try self.genAddr(node.left.?);
+                try self.pushTemp();
+                try self.genExpr(node.right.?);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    lsl x1, x0, #3\n", .{}); // index * 8
+                    try self.popTemp("x0");
+                    try self.writer.print("    add x0, x0, x1\n", .{});
+                } else {
+                    try self.writer.print("    shlq $3, %rax\n", .{});
+                    try self.writer.print("    movq %rax, %r10\n", .{});
+                    try self.popTemp("%rax");
+                    try self.writer.print("    addq %r10, %rax\n", .{});
+                }
+            },
+            else => @panic("Cannot take address of this node type"),
+        }
     }
 
     fn genExpr(self: *CodeGen, node: *Node) anyerror!void {
@@ -100,23 +140,7 @@ pub const CodeGen = struct {
                 }
             },
             .AddressOf => {
-                if (node.right.?.type == .Identifier) {
-                    const name = node.right.?.name.?;
-                    if (self.vars.get(name)) |offset| {
-                        if (self.arch == .arm64) {
-                            try self.writer.print("    add x0, x29, #{}\n", .{offset});
-                        } else {
-                            try self.writer.print("    leaq {}(%rbp), %rax\n", .{offset});
-                        }
-                    } else if (self.globals.contains(name)) {
-                        if (self.arch == .arm64) {
-                            try self.writer.print("    adrp x0, _{s}@PAGE\n", .{name});
-                            try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{name});
-                        } else {
-                            try self.writer.print("    leaq _{s}(%rip), %rax\n", .{name});
-                        }
-                    } else @panic("Undefined variable");
-                } else @panic("AddressOf only supported for identifiers");
+                try self.genAddr(node.right.?);
             },
             .Deref => {
                 try self.genExpr(node.right.?);
@@ -126,17 +150,24 @@ pub const CodeGen = struct {
                     try self.writer.print("    movq (%rax), %rax\n", .{});
                 }
             },
+            .Index => {
+                try self.genAddr(node);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    ldr x0, [x0]\n", .{});
+                } else {
+                    try self.writer.print("    movq (%rax), %rax\n", .{});
+                }
+            },
             .Assignment => {
                 if (node.name) |name| {
                     const is_global = self.globals.contains(name);
-                    const offset = if (!is_global) try self.registerVar(name) else 0;
+                    const offset = if (!is_global) try self.registerVar(name, 8) else 0;
                     if (node.op == null or node.op.? == .Equal) {
                         try self.genExpr(node.right.?);
                     } else {
                         if (is_global) {
                             if (self.arch == .arm64) {
-                                try self.writer.print("    adrp x8, _{s}@PAGE\n", .{name});
-                                try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                try self.writer.print("    adrp x8, _{s}@PAGE\n    ldr x0, [x8, _{s}@PAGEOFF]\n", .{name, name});
                             } else {
                                 try self.writer.print("    movq _{s}(%rip), %rax\n", .{name});
                             }
@@ -187,7 +218,12 @@ pub const CodeGen = struct {
                         }
                     }
                 } else if (node.left) |addr_node| {
-                    try self.genExpr(addr_node);
+                    // This handles both *p = val and a[i] = val
+                    if (addr_node.type == .Index) {
+                        try self.genAddr(addr_node);
+                    } else {
+                        try self.genExpr(addr_node);
+                    }
                     try self.pushTemp();
                     try self.genExpr(node.right.?);
                     if (self.arch == .arm64) {
@@ -335,13 +371,44 @@ pub const CodeGen = struct {
                 try self.writer.print("{s}:\n", .{label_end});
             },
             .UnaryOp => {
-                try self.genExpr(node.right.?);
-                if (node.op.? == .Minus) {
-                    if (self.arch == .arm64) { try self.writer.print("    neg x0, x0\n", .{}); } else { try self.writer.print("    negq %rax\n", .{}); }
-                } else if (node.op.? == .Bang) {
-                    if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    cset x0, eq\n", .{}); } else { try self.writer.print("    cmpq $0, %rax\n    sete %al\n    movzbl %al, %eax\n", .{}); }
-                } else if (node.op.? == .Tilde) {
-                    if (self.arch == .arm64) { try self.writer.print("    mvn x0, x0\n", .{}); } else { try self.writer.print("    notq %rax\n", .{}); }
+                if (node.op.? == .PlusPlus or node.op.? == .MinusMinus) {
+                    // Prefix ++ and --
+                    try self.genAddr(node.right.?);
+                    try self.pushTemp();
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    ldr x0, [x0]\n", .{});
+                        if (node.op.? == .PlusPlus) {
+                            try self.writer.print("    add x0, x0, #1\n", .{});
+                        } else {
+                            try self.writer.print("    sub x0, x0, #1\n", .{});
+                        }
+                        try self.pushTemp();
+                        try self.popTemp("x1"); // new value
+                        try self.popTemp("x0"); // address
+                        try self.writer.print("    str x1, [x0]\n", .{});
+                        try self.writer.print("    mov x0, x1\n", .{});
+                    } else {
+                        try self.writer.print("    movq (%rax), %rax\n", .{});
+                        if (node.op.? == .PlusPlus) {
+                            try self.writer.print("    incq %rax\n", .{});
+                        } else {
+                            try self.writer.print("    decq %rax\n", .{});
+                        }
+                        try self.pushTemp();
+                        try self.popTemp("%r10"); // new value
+                        try self.popTemp("%rax"); // address
+                        try self.writer.print("    movq %r10, (%rax)\n", .{});
+                        try self.writer.print("    movq %r10, %rax\n", .{});
+                    }
+                } else {
+                    try self.genExpr(node.right.?);
+                    if (node.op.? == .Minus) {
+                        if (self.arch == .arm64) { try self.writer.print("    neg x0, x0\n", .{}); } else { try self.writer.print("    negq %rax\n", .{}); }
+                    } else if (node.op.? == .Bang) {
+                        if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    cset x0, eq\n", .{}); } else { try self.writer.print("    cmpq $0, %rax\n    sete %al\n    movzbl %al, %eax\n", .{}); }
+                    } else if (node.op.? == .Tilde) {
+                        if (self.arch == .arm64) { try self.writer.print("    mvn x0, x0\n", .{}); } else { try self.writer.print("    notq %rax\n", .{}); }
+                    }
                 }
             },
             else => @panic("Invalid expression node"),
@@ -353,15 +420,18 @@ pub const CodeGen = struct {
             .VarDecl => {
                 if (node.right) |right| {
                     try self.genExpr(right);
-                    const offset = try self.registerVar(node.name.?);
+                    const offset = try self.registerVar(node.name.?, 8);
                     if (self.arch == .arm64) {
                         try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
                     } else {
                         try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
                     }
                 } else {
-                    _ = try self.registerVar(node.name.?);
+                    _ = try self.registerVar(node.name.?, 8);
                 }
+            },
+            .ArrayDecl => {
+                _ = try self.registerVar(node.name.?, @intCast(node.value.? * 8));
             },
             .Assignment, .FunctionCall => {
                 try self.genExpr(node);
@@ -414,18 +484,20 @@ pub const CodeGen = struct {
         self.temp_stack_pos = -128;
         try self.writer.print(".globl _{s}\n", .{node.name.?});
         if (self.arch == .arm64) {
-            try self.writer.print(".p2align 2\n_{s}:\n    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    sub sp, sp, #512\n", .{node.name.?});
+            try self.writer.print(".p2align 2\n_{s}:\n    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    sub sp, sp, #1024\n", .{node.name.?});
         } else {
-            try self.writer.print(".p2align 4, 0x90\n_{s}:\n    pushq %rbp\n    movq %rsp, %rbp\n    subq $512, %rsp\n", .{node.name.?});
+            try self.writer.print(".p2align 4, 0x90\n_{s}:\n    pushq %rbp\n    movq %rsp, %rbp\n    subq $1024, %rsp\n", .{node.name.?});
         }
         if (node.params) |params| {
             for (params, 0..) |param, idx| {
-                const offset = try self.registerVar(param);
+                const offset = try self.registerVar(param, 8);
                 if (self.arch == .arm64) {
                     try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, offset});
                 } else {
                     const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
-                    try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
+                    if (idx < 6) {
+                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
+                    }
                 }
             }
         }
