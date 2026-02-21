@@ -147,3 +147,21 @@ Example:
 ```bash
 ./zig-out/bin/compiler --dump-ast --asm-comments examples/arithmetic.simple
 ```
+
+---
+
+## Context for Future Development
+**Current State**:
+- Multi-architecture support (ARM64/x86_64) is stable.
+- The codebase is modular (Backend/Parser split).
+- 70/70 tests are passing.
+- Key features implemented: Structs, Enums, Typedef, Pointers, Arrays, Compound Assignments, Ternary, Switch/Case, Postfix ops, Sizeof, Multiple Declarations.
+
+**Immediate Next Steps**:
+1. **Type Casting**: Implement `(type)expression` syntax and backend logic.
+2. **Initializers**: Support `{1, 2, 3}` syntax for arrays and structs.
+3. **Semantic Analysis**: Add a dedicated pass between Parser and CodeGen to handle type checking and symbol resolution more robustly (removing the need for the fallback search in `MemberAccess`).
+4. **Void Pointers/Generic Pointers**: Improve handling of `void*`.
+
+**Resume Prompt**:
+> "I am working on a Zig-based C compiler. All 70 tests are passing. The project was recently refactored into a modular structure (src/parser/ and src/backend/). I have implemented structs, enums, switch/case, and sizeof. Please help me implement the next feature: [Type Casting / Array Initializers]."
