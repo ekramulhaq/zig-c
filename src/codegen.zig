@@ -8,13 +8,19 @@ const Arch = common.Arch;
 const Global = struct {
     size: i32,
     init_value: ?i64,
+    data_type: ast.DataType = .Int,
+};
+
+const LocalVar = struct {
+    offset: i32,
+    data_type: ast.DataType,
 };
 
 /// CodeGen converts an AST into assembly code.
 pub const CodeGen = struct {
     writer: std.fs.File.Writer,
     label_count: usize,
-    vars: std.StringHashMap(i32),
+    vars: std.StringHashMap(LocalVar),
     globals: std.StringHashMap(Global),
     struct_layouts: std.StringHashMap(std.StringHashMap(i32)), // struct name -> member name -> offset
     strings: std.ArrayList([]const u8),
@@ -28,7 +34,7 @@ pub const CodeGen = struct {
         return CodeGen{
             .writer = writer,
             .label_count = 0,
-            .vars = std.StringHashMap(i32).init(allocator),
+            .vars = std.StringHashMap(LocalVar).init(allocator),
             .globals = std.StringHashMap(Global).init(allocator),
             .struct_layouts = std.StringHashMap(std.StringHashMap(i32)).init(allocator),
             .strings = std.ArrayList([]const u8).init(allocator),
@@ -89,18 +95,19 @@ pub const CodeGen = struct {
         return label;
     }
 
-    fn registerVar(self: *CodeGen, name: []const u8, size: i32) !i32 {
-        if (self.vars.get(name)) |offset| return offset;
+    fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType) !LocalVar {
+        if (self.vars.get(name)) |local| return local;
         self.stack_pos -= size;
-        const offset = self.stack_pos;
-        try self.vars.put(name, offset);
-        return offset;
+        const local = LocalVar{ .offset = self.stack_pos, .data_type = data_type };
+        try self.vars.put(name, local);
+        return local;
     }
 
     fn genAddr(self: *CodeGen, node: *Node) anyerror!void {
         switch (node.type) {
             .Identifier => {
-                if (self.vars.get(node.name.?)) |offset| {
+                if (self.vars.get(node.name.?)) |local| {
+                    const offset = local.offset;
                     if (self.arch == .arm64) {
                         if (offset >= 0) {
                             try self.writer.print("    add x0, x29, #{}\n", .{offset});
@@ -170,8 +177,8 @@ pub const CodeGen = struct {
                 }
             },
             .Identifier => {
-                if (self.vars.get(node.name.?)) |offset| {
-                    try self.emitLoad(if (self.arch == .arm64) "x0" else "%rax", offset);
+                if (self.vars.get(node.name.?)) |local| {
+                    try self.emitLoad(if (self.arch == .arm64) "x0" else "%rax", local.offset);
                 } else if (self.globals.get(node.name.?)) |_| {
                     if (self.arch == .arm64) {
                         try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
@@ -205,7 +212,11 @@ pub const CodeGen = struct {
             .Assignment => {
                 if (node.name) |name| {
                     const is_global = self.globals.contains(name);
-                    const offset = if (!is_global) try self.registerVar(name, 8) else 0;
+                    var offset: i32 = 0;
+                    if (!is_global) {
+                        const local = try self.registerVar(name, 8, node.data_type);
+                        offset = local.offset;
+                    }
                     if (node.op == null or node.op.? == .Equal) {
                         try self.genExpr(node.right.?);
                     } else {
@@ -504,14 +515,14 @@ pub const CodeGen = struct {
             .VarDecl => {
                 if (node.right) |right| {
                     try self.genExpr(right);
-                    const offset = try self.registerVar(node.name.?, 8);
-                    try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", offset);
+                    const local = try self.registerVar(node.name.?, 8, node.data_type);
+                    try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", local.offset);
                 } else {
-                    _ = try self.registerVar(node.name.?, 8);
+                    _ = try self.registerVar(node.name.?, 8, node.data_type);
                 }
             },
             .ArrayDecl => {
-                _ = try self.registerVar(node.name.?, @intCast(node.value.? * 8));
+                _ = try self.registerVar(node.name.?, @intCast(node.value.? * 8), node.data_type);
             },
             .Assignment, .FunctionCall => {
                 try self.genExpr(node);
@@ -571,13 +582,14 @@ pub const CodeGen = struct {
         }
         if (node.params) |params| {
             for (params, 0..) |param, idx| {
-                const offset = try self.registerVar(param, 8);
+                const param_type = if (node.params_types) |pts| pts[idx] else .Int;
+                const local = try self.registerVar(param, 8, param_type);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, offset});
+                    try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, local.offset});
                 } else {
                     const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
                     if (idx < 6) {
-                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
+                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], local.offset});
                     }
                 }
             }
@@ -594,9 +606,9 @@ pub const CodeGen = struct {
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
         for (nodes) |node| {
             if (node.type == .VarDecl) {
-                try self.globals.put(node.name.?, .{ .size = 8, .init_value = node.init_value });
+                try self.globals.put(node.name.?, .{ .size = 8, .init_value = node.init_value, .data_type = node.data_type });
             } else if (node.type == .ArrayDecl) {
-                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * 8), .init_value = null });
+                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * 8), .init_value = null, .data_type = node.data_type });
             } else if (node.type == .StructDecl) {
                 var layout = std.StringHashMap(i32).init(self.allocator);
                 var offset: i32 = 0;

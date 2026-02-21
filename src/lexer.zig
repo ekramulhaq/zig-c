@@ -32,6 +32,7 @@ pub const TokenType = enum {
     PipePipe,
     Bang,
     IntKeyword,
+    CharKeyword,
     ReturnKeyword,
     IfKeyword,
     ElseKeyword,
@@ -258,6 +259,7 @@ pub const Lexer = struct {
                     }
                     const value = self.source[start_pos..self.pos];
                     if (std.mem.eql(u8, value, "int")) return Token{ .type = .IntKeyword, .value = value, .line = start_line, .col = start_col };
+                    if (std.mem.eql(u8, value, "char")) return Token{ .type = .CharKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "return")) return Token{ .type = .ReturnKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "if")) return Token{ .type = .IfKeyword, .value = value, .line = start_line, .col = start_col };
                     if (std.mem.eql(u8, value, "else")) return Token{ .type = .ElseKeyword, .value = value, .line = start_line, .col = start_col };

@@ -1,0 +1,22 @@
+int main() {
+    int a = 1;
+    int b = 0;
+    int c = 1;
+
+    // (1 && 0) || 1 -> 0 || 1 -> 1
+    int res1 = (a && b) || c;
+
+    // 1 && (0 || 1) -> 1 && 1 -> 1
+    int res2 = a && (b || c);
+
+    // !0 && 1 -> 1 && 1 -> 1
+    int res3 = !b && a;
+
+    // !(1 && 0) -> !0 -> 1
+    int res4 = !(a && b);
+
+    if (res1 == 1 && res2 == 1 && res3 == 1 && res4 == 1) {
+        return 42;
+    }
+    return 0;
+}

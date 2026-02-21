@@ -1,0 +1,11 @@
+int global_var = 100;
+
+int main() {
+    if (global_var == 100) {
+        global_var = 200;
+        if (global_var == 200) {
+            return 42;
+        }
+    }
+    return 0;
+}

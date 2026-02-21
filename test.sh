@@ -65,6 +65,13 @@ EXAMPLES=(
     "examples/optimize.simple:51"
     "examples/sieve.simple:100"
     "examples/structs.simple:42"
+    "examples/logical_precedence.simple:42"
+    "examples/recursion_factorial.simple:42"
+    "examples/array_sum.simple:42"
+    "examples/global_init.simple:42"
+    "examples/compound_ptr.simple:42"
+    "examples/nested_logic.simple:42"
+    "examples/char_test.simple:42"
 )
 
 TOTAL_PASS=0

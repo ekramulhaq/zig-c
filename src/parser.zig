@@ -344,8 +344,9 @@ pub const Parser = struct {
 
     fn parseStmt(self: *Parser) anyerror!*Node {
         const token = self.current() orelse return error.UnexpectedEOF;
-        if (token.type == .IntKeyword or token.type == .StructKeyword) {
+        if (token.type == .IntKeyword or token.type == .CharKeyword or token.type == .StructKeyword) {
             const is_struct = (token.type == .StructKeyword);
+            const data_type: ast.DataType = if (token.type == .CharKeyword) .Char else .Int;
             self.advance();
             var struct_name: ?[]const u8 = null;
             if (is_struct) {
@@ -363,7 +364,7 @@ pub const Parser = struct {
                 try self.expect(.RBracket, "Expected ] after array size");
                 try self.expect(.Semicolon, "Expected ; after array declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value };
+                node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type };
                 return node;
             }
             
@@ -371,7 +372,7 @@ pub const Parser = struct {
                 const expr = try self.parseExpr();
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr };
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type };
                 if (expr.type == .Number) {
                     node.init_value = expr.value;
                 }
@@ -379,7 +380,7 @@ pub const Parser = struct {
             } else {
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
-                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null };
+                node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type };
                 // If it's a struct, we should probably mark it. For now, our compiler treats all vars as 8 bytes.
                 return node;
             }
@@ -456,14 +457,27 @@ pub const Parser = struct {
     }
 
     fn parseFunction(self: *Parser) anyerror!*Node {
-        try self.expect(.IntKeyword, "Only int return type is supported");
+        const ret_token = self.current() orelse return error.UnexpectedEOF;
+        if (ret_token.type != .IntKeyword and ret_token.type != .CharKeyword) {
+            return self.errorAt(ret_token, "Expected return type (int or char)");
+        }
+        const ret_type: ast.DataType = if (ret_token.type == .CharKeyword) .Char else .Int;
+        self.advance();
+
         while (self.consume(.Star)) {}
         const ident = try self.expectIdentifier("Expected function name");
         try self.expect(.LParen, "Expected ( after function name");
         var params = std.ArrayList([]const u8).init(self.allocator);
+        var params_types = std.ArrayList(ast.DataType).init(self.allocator);
         if (!self.consume(.RParen)) {
             while (true) {
-                try self.expect(.IntKeyword, "Only int parameters are supported");
+                const param_type_token = self.current() orelse return error.UnexpectedEOF;
+                if (param_type_token.type != .IntKeyword and param_type_token.type != .CharKeyword) {
+                    return self.errorAt(param_type_token, "Expected parameter type (int or char)");
+                }
+                try params_types.append(if (param_type_token.type == .CharKeyword) .Char else .Int);
+                self.advance();
+
                 while (self.consume(.Star)) {}
                 try params.append(try self.expectIdentifier("Expected parameter name"));
                 if (!self.consume(.Comma)) break;
@@ -478,7 +492,7 @@ pub const Parser = struct {
         }
         try self.expect(.RBrace, "Expected } to end function body");
         const node = try self.allocator.create(Node);
-        node.* = Node{ .type = .Function, .name = ident, .params = try params.toOwnedSlice(), .body = try body.toOwnedSlice() };
+        node.* = Node{ .type = .Function, .data_type = ret_type, .name = ident, .params = try params.toOwnedSlice(), .params_types = try params_types.toOwnedSlice(), .body = try body.toOwnedSlice() };
         return node;
     }
 
@@ -499,8 +513,11 @@ pub const Parser = struct {
             }
 
             var i = self.pos + 1;
+            if (self.tokens[self.pos].type == .StructKeyword) {
+                i += 1; // skip struct name
+            }
             while (i < self.tokens.len and self.tokens[i].type == .Star) : (i += 1) {}
-            i += 1;
+            i += 1; // skip identifier
             if (i < self.tokens.len and self.tokens[i].type == .LParen) {
                 try items.append(try self.parseFunction());
             } else {

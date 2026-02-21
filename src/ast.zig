@@ -26,9 +26,15 @@ pub const NodeType = enum {
     MemberAccess,
 };
 
+pub const DataType = enum {
+    Int,
+    Char,
+};
+
 /// Represents a node in the Abstract Syntax Tree.
 pub const Node = struct {
     type: NodeType,
+    data_type: DataType = .Int,
     value: ?i64 = null,
     name: ?[]const u8 = null,
     op: ?TokenType = null,
@@ -41,6 +47,7 @@ pub const Node = struct {
     update: ?*Node = null,
     args: ?[]*Node = null,
     params: ?[][]const u8 = null,
+    params_types: ?[]DataType = null,
     data: ?[]const u8 = null, // For string literals
     init_value: ?i64 = null, // For global initializers
     members: ?[]*Node = null, // For struct definitions
