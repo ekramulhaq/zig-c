@@ -1,10 +1,10 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const lexer = @import("lexer.zig");
+const token_pkg = @import("token.zig");
 
 const Node = ast.Node;
 const NodeType = ast.NodeType;
-const TokenType = lexer.TokenType;
+const TokenType = token_pkg.TokenType;
 
 pub const Optimizer = struct {
     allocator: std.mem.Allocator,

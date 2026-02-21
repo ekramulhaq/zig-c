@@ -74,7 +74,8 @@ pub fn main() !void {
         std.debug.print("\n", .{});
     }
 
-    var par = Parser.init(try tokens.toOwnedSlice(), allocator);
+    var par = try Parser.create(try tokens.toOwnedSlice(), allocator);
+    defer par.deinit();
     const ast_nodes = par.parseProgram() catch |err| {
         if (err == error.ParseError or err == error.UnexpectedToken or err == error.UnexpectedEOF) {
             // Error message already printed by parser

@@ -2,25 +2,15 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const common = @import("common.zig");
 const type_system = @import("type_system.zig");
+const backend_core = @import("backend/core.zig");
+const arm64 = @import("backend/arm64.zig");
+const x86_64 = @import("backend/x86_64.zig");
 
 const Node = ast.Node;
 const Arch = common.Arch;
 const TypeSystem = type_system.TypeSystem;
-
-const Global = struct {
-    size: i32,
-    init_value: ?i64,
-    data_type: ast.DataType = .Int,
-    is_pointer: bool = false,
-    struct_name: ?[]const u8 = null,
-};
-
-const LocalVar = struct {
-    offset: i32,
-    data_type: ast.DataType,
-    is_pointer: bool = false,
-    struct_name: ?[]const u8 = null,
-};
+const Global = backend_core.Global;
+const LocalVar = backend_core.LocalVar;
 
 /// CodeGen converts an AST into assembly code.
 pub const CodeGen = struct {
@@ -37,6 +27,10 @@ pub const CodeGen = struct {
     asm_comments: bool,
     arch: Arch,
     allocator: std.mem.Allocator,
+    
+    // Concrete backends
+    arm64_backend: arm64.Arm64Backend,
+    x86_64_backend: x86_64.X86_64Backend,
 
     /// Initializes a new CodeGen with the given writer, allocator, and target architecture.
     pub fn init(writer: std.fs.File.Writer, allocator: std.mem.Allocator, arch: Arch, ts: TypeSystem) CodeGen {
@@ -48,57 +42,41 @@ pub const CodeGen = struct {
             .type_system = ts,
             .strings = std.ArrayList([]const u8).init(allocator),
             .stack_pos = 0,
-            .temp_stack_pos = -1024, // Temps start at -1024 to avoid overlap with locals
+            .temp_stack_pos = -1024,
             .break_label = null,
             .continue_label = null,
             .asm_comments = false,
             .arch = arch,
             .allocator = allocator,
+            .arm64_backend = .{ .writer = writer },
+            .x86_64_backend = .{ .writer = writer },
         };
-    }
-
-    fn pushTemp(self: *CodeGen) !void {
-        if (self.arch == .arm64) {
-            try self.emitStore("x0", self.temp_stack_pos);
-        } else {
-            try self.writer.print("    movq %rax, {}(%rbp)\n", .{self.temp_stack_pos});
-        }
-        self.temp_stack_pos -= 8;
-    }
-
-    fn popTemp(self: *CodeGen, reg: []const u8) !void {
-        self.temp_stack_pos += 8;
-        if (self.arch == .arm64) {
-            try self.emitLoad(reg, self.temp_stack_pos);
-        } else {
-            try self.writer.print("    movq {}(%rbp), {s}\n", .{self.temp_stack_pos, reg});
-        }
     }
 
     fn emitLoad(self: *CodeGen, reg: []const u8, offset: i32) !void {
         if (self.arch == .arm64) {
-            if (offset >= -256 and offset <= 255) {
-                try self.writer.print("    ldr {s}, [x29, #{}]\n", .{reg, offset});
-            } else {
-                try self.writer.print("    mov x9, #{}\n", .{offset});
-                try self.writer.print("    ldr {s}, [x29, x9]\n", .{reg});
-            }
+            try self.arm64_backend.emitLoad(reg, offset);
         } else {
-            try self.writer.print("    movq {}(%rbp), {s}\n", .{offset, reg});
+            try self.x86_64_backend.emitLoad(reg, offset);
         }
     }
 
     fn emitStore(self: *CodeGen, reg: []const u8, offset: i32) !void {
         if (self.arch == .arm64) {
-            if (offset >= -256 and offset <= 255) {
-                try self.writer.print("    str {s}, [x29, #{}]\n", .{reg, offset});
-            } else {
-                try self.writer.print("    mov x9, #{}\n", .{offset});
-                try self.writer.print("    str {s}, [x29, x9]\n", .{reg});
-            }
+            try self.arm64_backend.emitStore(reg, offset);
         } else {
-            try self.writer.print("    movq {s}, {}(%rbp)\n", .{reg, offset});
+            try self.x86_64_backend.emitStore(reg, offset);
         }
+    }
+
+    fn pushTemp(self: *CodeGen) !void {
+        try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", self.temp_stack_pos);
+        self.temp_stack_pos -= 8;
+    }
+
+    fn popTemp(self: *CodeGen, reg: []const u8) !void {
+        self.temp_stack_pos += 8;
+        try self.emitLoad(reg, self.temp_stack_pos);
     }
 
     fn newLabel(self: *CodeGen) []const u8 {
@@ -129,12 +107,21 @@ pub const CodeGen = struct {
                     } else {
                         try self.writer.print("    leaq {}(%rbp), %rax\n", .{offset});
                     }
-                } else if (self.globals.get(node.name.?)) |_| {
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    adrp x0, _{s}@PAGE\n", .{node.name.?});
-                        try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{node.name.?});
+                } else if (self.globals.get(node.name.?)) |global| {
+                    if (global.is_pointer) {
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
+                            try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                        } else {
+                            try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                        }
                     } else {
-                        try self.writer.print("    leaq _{s}(%rip), %rax\n", .{node.name.?});
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    adrp x0, _{s}@PAGE\n", .{node.name.?});
+                            try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{node.name.?});
+                        } else {
+                            try self.writer.print("    leaq _{s}(%rip), %rax\n", .{node.name.?});
+                        }
                     }
                 } else @panic("Undefined variable");
             },
@@ -142,7 +129,6 @@ pub const CodeGen = struct {
                 try self.genExpr(node.right.?);
             },
             .Index => {
-                // If it's identifier[index], we need to check if identifier is a pointer or array
                 var is_ptr = false;
                 if (node.left.?.type == .Identifier) {
                     if (self.vars.get(node.left.?.name.?)) |local| {
@@ -153,26 +139,25 @@ pub const CodeGen = struct {
                 }
 
                 if (is_ptr) {
-                    try self.genExpr(node.left.?); // Get the pointer value
+                    try self.genExpr(node.left.?);
                 } else {
-                    try self.genAddr(node.left.?); // Get the array address
+                    try self.genAddr(node.left.?);
                 }
-                try self.pushTemp(); // Base address
-                try self.genExpr(node.right.?); // Index
+                try self.pushTemp();
+                try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    lsl x1, x0, #3\n", .{}); // index * 8
-                    try self.popTemp("x0"); // base address
+                    try self.writer.print("    lsl x1, x0, #3\n", .{});
+                    try self.popTemp("x0");
                     try self.writer.print("    add x0, x0, x1\n", .{});
                 } else {
-                    try self.writer.print("    shlq $3, %rax\n", .{}); // index * 8
+                    try self.writer.print("    shlq $3, %rax\n", .{});
                     try self.writer.print("    movq %rax, %r10\n", .{});
-                    try self.popTemp("%rax"); // base address
+                    try self.popTemp("%rax");
                     try self.writer.print("    addq %r10, %rax\n", .{});
                 }
             },
             .MemberAccess => {
                 var s_name: ?[]const u8 = null;
-                // We need to know the struct type of the left side
                 if (node.left.?.type == .Identifier) {
                     if (self.vars.get(node.left.?.name.?)) |local| {
                         s_name = local.struct_name;
@@ -180,7 +165,6 @@ pub const CodeGen = struct {
                         s_name = global.struct_name;
                     }
                 } else if (node.left.?.type == .Deref) {
-                    // if it was a->b, parser made it (*a).b
                     const inner = node.left.?.right.?;
                     if (inner.type == .Identifier) {
                         if (self.vars.get(inner.name.?)) |local| {
@@ -191,7 +175,6 @@ pub const CodeGen = struct {
                     }
                 }
 
-                // Fallback: search all layouts if type info is missing (for nested a->b->c)
                 if (s_name == null) {
                     var it = self.type_system.structs.iterator();
                     while (it.next()) |entry| {
@@ -329,27 +312,25 @@ pub const CodeGen = struct {
                         try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", offset);
                     }
                 } else if (node.left) |addr_node| {
-                    // Deref, Index, MemberAccess
                     try self.genAddr(addr_node);
-                    try self.pushTemp(); // Target address
+                    try self.pushTemp();
                     
                     if (node.op != null and node.op.? != .Equal) {
-                        // Compound assignment to address: evaluate current value
                         if (self.arch == .arm64) {
                             try self.popTemp("x0");
-                            try self.pushTemp(); // save it back
+                            try self.pushTemp();
                             try self.writer.print("    ldr x0, [x0]\n", .{});
                         } else {
                             try self.popTemp("%rax");
                             try self.pushTemp();
                             try self.writer.print("    movq (%rax), %rax\n", .{});
                         }
-                        try self.pushTemp(); // Current value
-                        try self.genExpr(node.right.?); // RHS
+                        try self.pushTemp();
+                        try self.genExpr(node.right.?);
                         
                         if (self.arch == .arm64) {
                             try self.writer.print("    mov x1, x0\n", .{});
-                            try self.popTemp("x0"); // Current value
+                            try self.popTemp("x0");
                             switch (node.op.?) {
                                 .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
                                 .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
@@ -358,13 +339,13 @@ pub const CodeGen = struct {
                                 .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
                                 else => unreachable,
                             }
-                            try self.pushTemp(); // result
-                            try self.popTemp("x1"); // result
-                            try self.popTemp("x0"); // address
+                            try self.pushTemp();
+                            try self.popTemp("x1");
+                            try self.popTemp("x0");
                             try self.writer.print("    str x1, [x0]\n    mov x0, x1\n", .{});
                         } else {
-                            try self.writer.print("    movq %rax, %r10\n", .{}); // RHS in r10
-                            try self.popTemp("%rax"); // current value in rax
+                            try self.writer.print("    movq %rax, %r10\n", .{});
+                            try self.popTemp("%rax");
                             switch (node.op.?) {
                                 .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
                                 .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
@@ -373,12 +354,11 @@ pub const CodeGen = struct {
                                 .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
                                 else => unreachable,
                             }
-                            try self.writer.print("    movq %rax, %r10\n", .{}); // result in r10
-                            try self.popTemp("%rax"); // address in rax
+                            try self.writer.print("    movq %rax, %r10\n", .{});
+                            try self.popTemp("%rax");
                             try self.writer.print("    movq %r10, (%rax)\n    movq %r10, %rax\n", .{});
                         }
                     } else {
-                        // Simple assignment: *addr = RHS
                         try self.genExpr(node.right.?);
                         if (self.arch == .arm64) {
                             try self.writer.print("    mov x1, x0\n", .{});
@@ -404,7 +384,6 @@ pub const CodeGen = struct {
                         j -= 1;
                         if (self.arch == .arm64) {
                             if (is_printf and j > 0) {
-                                // For printf, variadic args after the first go to the stack
                                 try self.emitLoad("x0", self.temp_stack_pos + 8);
                                 try self.writer.print("    str x0, [sp, #-16]!\n", .{});
                                 self.temp_stack_pos += 8;
@@ -422,7 +401,6 @@ pub const CodeGen = struct {
                 if (self.arch == .arm64) {
                     try self.writer.print("    bl _{s}\n", .{node.name.?});
                     if (is_printf) {
-                        // Clean up variadic args from stack
                         const stack_args = if (node.args) |a| if (a.len > 1) a.len - 1 else 0 else 0;
                         if (stack_args > 0) {
                             try self.writer.print("    add sp, sp, #{}\n", .{stack_args * 16});
@@ -567,15 +545,15 @@ pub const CodeGen = struct {
                         try self.writer.print("    ldr x0, [x0]\n", .{});
                         if (node.op.? == .PlusPlus) { try self.writer.print("    add x0, x0, #1\n", .{}); } else { try self.writer.print("    sub x0, x0, #1\n", .{}); }
                         try self.pushTemp();
-                        try self.popTemp("x1"); // new value
-                        try self.popTemp("x0"); // address
+                        try self.popTemp("x1");
+                        try self.popTemp("x0");
                         try self.writer.print("    str x1, [x0]\n    mov x0, x1\n", .{});
                     } else {
                         try self.writer.print("    movq (%rax), %rax\n", .{});
                         if (node.op.? == .PlusPlus) { try self.writer.print("    incq %rax\n", .{}); } else { try self.writer.print("    decq %rax\n", .{}); }
                         try self.pushTemp();
-                        try self.popTemp("%r10"); // new value
-                        try self.popTemp("%rax"); // address
+                        try self.popTemp("%r10");
+                        try self.popTemp("%rax");
                         try self.writer.print("    movq %r10, (%rax)\n    movq %r10, %rax\n", .{});
                     }
                 } else {
@@ -591,21 +569,21 @@ pub const CodeGen = struct {
             },
             .PostfixOp => {
                 try self.genAddr(node.right.?);
-                try self.pushTemp(); // address
+                try self.pushTemp();
                 if (self.arch == .arm64) {
                     try self.writer.print("    ldr x0, [x0]\n", .{});
-                    try self.pushTemp(); // original value
+                    try self.pushTemp();
                     if (node.op.? == .PlusPlus) { try self.writer.print("    add x1, x0, #1\n", .{}); } else { try self.writer.print("    sub x1, x0, #1\n", .{}); }
-                    try self.popTemp("x0"); // original value
-                    try self.popTemp("x2"); // address
+                    try self.popTemp("x0");
+                    try self.popTemp("x2");
                     try self.writer.print("    str x1, [x2]\n", .{});
                 } else {
                     try self.writer.print("    movq (%rax), %rax\n", .{});
-                    try self.pushTemp(); // original value
-                    try self.writer.print("    movq %rax, %r11\n", .{}); // original value in r11
+                    try self.pushTemp();
+                    try self.writer.print("    movq %rax, %r11\n", .{});
                     if (node.op.? == .PlusPlus) { try self.writer.print("    incq %r11\n", .{}); } else { try self.writer.print("    decq %r11\n", .{}); }
-                    try self.popTemp("%rax"); // original value
-                    try self.popTemp("%r10"); // address
+                    try self.popTemp("%rax");
+                    try self.popTemp("%r10");
                     try self.writer.print("    movq %r11, (%r10)\n", .{});
                 }
             },
@@ -640,9 +618,9 @@ pub const CodeGen = struct {
                     try self.genExpr(right);
                 }
                 if (self.arch == .arm64) {
-                    try self.writer.print("    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n", .{});
+                    try self.arm64_backend.emitFunctionEpilog();
                 } else {
-                    try self.writer.print("    movq %rbp, %rsp\n    popq %rbp\n    ret\n", .{});
+                    try self.x86_64_backend.emitFunctionEpilog();
                 }
             },
             .If => {
@@ -732,20 +710,18 @@ pub const CodeGen = struct {
                 const old_break = self.break_label;
                 self.break_label = end_label;
 
-                // Evaluate condition
                 try self.genExpr(node.condition.?);
-                try self.pushTemp(); // Condition value
+                try self.pushTemp();
 
                 var default_label: ?[]const u8 = null;
                 
-                // First pass: Generate jump table (linear search for now)
                 for (node.body.?) |stmt| {
                     if (stmt.type == .Case) {
                         const case_label = self.newLabel();
-                        stmt.data = case_label; // Store label in node's data field for second pass
+                        stmt.data = case_label;
                         if (stmt.init_value) |val| {
                             try self.popTemp(if (self.arch == .arm64) "x1" else "%r10");
-                            try self.pushTemp(); // push back condition
+                            try self.pushTemp();
                             if (self.arch == .arm64) {
                                 try self.writer.print("    mov x2, #{}\n", .{val});
                                 try self.writer.print("    cmp x1, x2\n", .{});
@@ -766,10 +742,8 @@ pub const CodeGen = struct {
                     if (self.arch == .arm64) { try self.writer.print("    b {s}\n", .{end_label}); } else { try self.writer.print("    jmp {s}\n", .{end_label}); }
                 }
 
-                // Pop the condition value from temp stack
                 self.temp_stack_pos += 8;
 
-                // Second pass: Generate code for each case
                 for (node.body.?) |stmt| {
                     try self.genStmt(stmt);
                 }
@@ -796,9 +770,9 @@ pub const CodeGen = struct {
         }
         try self.writer.print(".globl _{s}\n", .{node.name.?});
         if (self.arch == .arm64) {
-            try self.writer.print(".p2align 2\n_{s}:\n    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    sub sp, sp, #2048\n", .{node.name.?});
+            try self.arm64_backend.emitFunctionProlog(node.name.?);
         } else {
-            try self.writer.print(".p2align 4, 0x90\n_{s}:\n    pushq %rbp\n    movq %rsp, %rbp\n    subq $2048, %rsp\n", .{node.name.?});
+            try self.x86_64_backend.emitFunctionProlog(node.name.?);
         }
         if (node.params) |params| {
             for (params, 0..) |param, idx| {
@@ -819,9 +793,9 @@ pub const CodeGen = struct {
         }
         for (node.body.?) |stmt| { try self.genStmt(stmt); }
         if (self.arch == .arm64) {
-            try self.writer.print("    mov x0, #0\n    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n", .{});
+            try self.arm64_backend.emitFunctionEpilog();
         } else {
-            try self.writer.print("    xorq %rax, %rax\n    movq %rbp, %rsp\n    popq %rbp\n    ret\n", .{});
+            try self.x86_64_backend.emitFunctionEpilog();
         }
     }
 
@@ -841,7 +815,6 @@ pub const CodeGen = struct {
 
     /// Generates code for the entire program.
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
-        // Second pass: globals
         for (nodes) |node| {
             try self.registerGlobal(node);
         }
