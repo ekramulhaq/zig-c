@@ -47,6 +47,7 @@ const TokenType = enum {
     LBrace,
     RBrace,
     Comma,
+    StringLiteral,
     EOF,
 };
 
@@ -70,6 +71,9 @@ const NodeType = enum {
     UnaryOp,
     Function,
     FunctionCall,
+    AddressOf,
+    Deref,
+    String,
 };
 
 const Node = struct {
@@ -86,6 +90,8 @@ const Node = struct {
     update: ?*Node = null,
     args: ?[]*Node = null,
     params: ?[][]const u8 = null,
+    data: ?[]const u8 = null,
+    init_value: ?i64 = null, // For global initializers
 };
 
 const Lexer = struct {
@@ -210,6 +216,15 @@ const Lexer = struct {
             '{' => return Token{ .type = .LBrace, .value = "{" },
             '}' => return Token{ .type = .RBrace, .value = "}" },
             ',' => return Token{ .type = .Comma, .value = "," },
+            '"' => {
+                const start = self.pos;
+                while (self.pos < self.source.len and self.source[self.pos] != '"') {
+                    self.pos += 1;
+                }
+                const value = self.source[start..self.pos];
+                if (self.pos < self.source.len) self.pos += 1;
+                return Token{ .type = .StringLiteral, .value = value };
+            },
             else => {
                 if (std.ascii.isDigit(c)) {
                     const start = self.pos - 1;
@@ -282,11 +297,15 @@ const Parser = struct {
         if (self.current()) |token| {
             switch (token.type) {
                 .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => {
-                    if (left.type != .Identifier) @panic("Invalid lvalue for assignment");
+                    if (left.type != .Identifier and left.type != .Deref) @panic("Invalid lvalue for assignment");
                     self.advance();
                     const right = try self.parseExpr();
                     const node = try self.allocator.create(Node);
-                    node.* = Node{ .type = .Assignment, .name = left.name, .op = token.type, .right = right };
+                    if (left.type == .Identifier) {
+                        node.* = Node{ .type = .Assignment, .name = left.name, .op = token.type, .right = right };
+                    } else {
+                        node.* = Node{ .type = .Assignment, .left = left.right, .op = token.type, .right = right };
+                    }
                     return node;
                 },
                 else => {},
@@ -444,6 +463,20 @@ const Parser = struct {
                 node.* = Node{ .type = .UnaryOp, .op = token.type, .right = right };
                 return node;
             }
+            if (token.type == .Star) {
+                self.advance();
+                const right = try self.parseUnary();
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .Deref, .right = right };
+                return node;
+            }
+            if (token.type == .Ampersand) {
+                self.advance();
+                const right = try self.parseUnary();
+                const node = try self.allocator.create(Node);
+                node.* = Node{ .type = .AddressOf, .right = right };
+                return node;
+            }
         }
         return try self.parseFactor();
     }
@@ -472,6 +505,10 @@ const Parser = struct {
             const node = try self.allocator.create(Node);
             node.* = Node{ .type = .Identifier, .name = token.value };
             return node;
+        } else if (token.type == .StringLiteral) {
+            const node = try self.allocator.create(Node);
+            node.* = Node{ .type = .String, .data = token.value };
+            return node;
         } else if (token.type == .LParen) {
             const expr = try self.parseExpr();
             try self.expect(.RParen, "Expected )");
@@ -484,6 +521,7 @@ const Parser = struct {
         const token = self.current() orelse @panic("Unexpected EOF");
         if (token.type == .IntKeyword) {
             self.advance();
+            while (self.consume(.Star)) {}
             const ident = self.current() orelse @panic("Expected identifier");
             if (ident.type != .Identifier) @panic("Expected identifier");
             self.advance();
@@ -492,6 +530,9 @@ const Parser = struct {
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
                 const node = try self.allocator.create(Node);
                 node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr };
+                if (expr.type == .Number) {
+                    node.init_value = expr.value;
+                }
                 return node;
             } else {
                 try self.expect(.Semicolon, "Expected ; after variable declaration");
@@ -574,6 +615,7 @@ const Parser = struct {
 
     fn parseFunction(self: *Parser) anyerror!*Node {
         try self.expect(.IntKeyword, "Only int return type is supported");
+        while (self.consume(.Star)) {}
         const ident = self.current() orelse @panic("Expected function name");
         self.advance();
         try self.expect(.LParen, "Expected ( after function name");
@@ -581,6 +623,7 @@ const Parser = struct {
         if (!self.consume(.RParen)) {
             while (true) {
                 try self.expect(.IntKeyword, "Only int parameters are supported");
+                while (self.consume(.Star)) {}
                 const p_ident = self.current() orelse @panic("Expected parameter name");
                 self.advance();
                 try params.append(p_ident.value);
@@ -604,7 +647,14 @@ const Parser = struct {
         var items = std.ArrayList(*Node).init(self.allocator);
         while (self.current()) |token| {
             if (token.type == .EOF) break;
-            try items.append(try self.parseFunction());
+            var i = self.pos + 1;
+            while (i < self.tokens.len and self.tokens[i].type == .Star) : (i += 1) {}
+            i += 1;
+            if (i < self.tokens.len and self.tokens[i].type == .LParen) {
+                try items.append(try self.parseFunction());
+            } else {
+                try items.append(try self.parseStmt());
+            }
         }
         return try items.toOwnedSlice();
     }
@@ -614,6 +664,8 @@ const CodeGen = struct {
     writer: std.fs.File.Writer,
     label_count: usize,
     vars: std.StringHashMap(i32),
+    globals: std.StringHashMap(?i64),
+    strings: std.ArrayList([]const u8),
     stack_pos: i32,
     temp_stack_pos: i32,
     arch: Arch,
@@ -624,6 +676,8 @@ const CodeGen = struct {
             .writer = writer,
             .label_count = 0,
             .vars = std.StringHashMap(i32).init(allocator),
+            .globals = std.StringHashMap(?i64).init(allocator),
+            .strings = std.ArrayList([]const u8).init(allocator),
             .stack_pos = 0,
             .temp_stack_pos = -128,
             .arch = arch,
@@ -673,63 +727,131 @@ const CodeGen = struct {
                 }
             },
             .Identifier => {
-                const offset = self.vars.get(node.name.?) orelse @panic("Undefined variable");
-                if (self.arch == .arm64) {
-                    try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
-                } else {
-                    try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
-                }
-            },
-            .Assignment => {
-                const offset = try self.registerVar(node.name.?);
-                if (node.op == null or node.op.? == .Equal) {
-                    try self.genExpr(node.right.?);
-                } else {
+                if (self.vars.get(node.name.?)) |offset| {
                     if (self.arch == .arm64) {
                         try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
                     } else {
                         try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
                     }
+                } else if (self.globals.contains(node.name.?)) {
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
+                        try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                    } else {
+                        try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                    }
+                } else @panic("Undefined variable");
+            },
+            .String => {
+                const idx = self.strings.items.len;
+                try self.strings.append(node.data.?);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    adrp x0, L_.str.{}@PAGE\n", .{idx});
+                    try self.writer.print("    add x0, x0, L_.str.{}@PAGEOFF\n", .{idx});
+                } else {
+                    try self.writer.print("    leaq L_.str.{}(%rip), %rax\n", .{idx});
+                }
+            },
+            .AddressOf => {
+                if (node.right.?.type == .Identifier) {
+                    const name = node.right.?.name.?;
+                    if (self.vars.get(name)) |offset| {
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    add x0, x29, #{}\n", .{offset});
+                        } else {
+                            try self.writer.print("    leaq {}(%rbp), %rax\n", .{offset});
+                        }
+                    } else if (self.globals.contains(name)) {
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    adrp x0, _{s}@PAGE\n", .{name});
+                            try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{name});
+                        } else {
+                            try self.writer.print("    leaq _{s}(%rip), %rax\n", .{name});
+                        }
+                    } else @panic("Undefined variable");
+                } else @panic("AddressOf only supported for identifiers");
+            },
+            .Deref => {
+                try self.genExpr(node.right.?);
+                if (self.arch == .arm64) {
+                    try self.writer.print("    ldr x0, [x0]\n", .{});
+                } else {
+                    try self.writer.print("    movq (%rax), %rax\n", .{});
+                }
+            },
+            .Assignment => {
+                if (node.name) |name| {
+                    const is_global = self.globals.contains(name);
+                    const offset = if (!is_global) try self.registerVar(name) else 0;
+                    if (node.op == null or node.op.? == .Equal) {
+                        try self.genExpr(node.right.?);
+                    } else {
+                        if (is_global) {
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    adrp x8, _{s}@PAGE\n", .{name});
+                                try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{name});
+                            } else {
+                                try self.writer.print("    movq _{s}(%rip), %rax\n", .{name});
+                            }
+                        } else {
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
+                            } else {
+                                try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
+                            }
+                        }
+                        try self.pushTemp();
+                        try self.genExpr(node.right.?);
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    mov x1, x0\n", .{});
+                            try self.popTemp("x0");
+                            switch (node.op.?) {
+                                .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
+                                .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
+                                .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
+                                .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
+                                .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
+                                else => unreachable,
+                            }
+                        } else {
+                            try self.writer.print("    movq %rax, %r10\n", .{});
+                            try self.popTemp("%rax");
+                            switch (node.op.?) {
+                                .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
+                                .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
+                                .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
+                                .SlashEqual => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
+                                .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
+                                else => unreachable,
+                            }
+                        }
+                    }
+                    if (is_global) {
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    adrp x8, _{s}@PAGE\n    str x0, [x8, _{s}@PAGEOFF]\n", .{name, name});
+                        } else {
+                            try self.writer.print("    movq %rax, _{s}(%rip)\n", .{name});
+                        }
+                    } else {
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
+                        } else {
+                            try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
+                        }
+                    }
+                } else if (node.left) |addr_node| {
+                    try self.genExpr(addr_node);
                     try self.pushTemp();
                     try self.genExpr(node.right.?);
                     if (self.arch == .arm64) {
                         try self.writer.print("    mov x1, x0\n", .{});
                         try self.popTemp("x0");
-                        switch (node.op.?) {
-                            .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
-                            .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
-                            .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
-                            .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
-                            .PercentEqual => {
-                                try self.writer.print("    sdiv x2, x0, x1\n", .{});
-                                try self.writer.print("    msub x0, x2, x1, x0\n", .{});
-                            },
-                            else => unreachable,
-                        }
+                        try self.writer.print("    str x1, [x0]\n    mov x0, x1\n", .{});
                     } else {
                         try self.writer.print("    movq %rax, %r10\n", .{});
                         try self.popTemp("%rax");
-                        switch (node.op.?) {
-                            .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
-                            .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
-                            .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
-                            .SlashEqual => {
-                                try self.writer.print("    cqo\n", .{});
-                                try self.writer.print("    idivq %r10\n", .{});
-                            },
-                            .PercentEqual => {
-                                try self.writer.print("    cqo\n", .{});
-                                try self.writer.print("    idivq %r10\n", .{});
-                                try self.writer.print("    movq %rdx, %rax\n", .{});
-                            },
-                            else => unreachable,
-                        }
+                        try self.writer.print("    movq %r10, (%rax)\n    movq %r10, %rax\n", .{});
                     }
-                }
-                if (self.arch == .arm64) {
-                    try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
-                } else {
-                    try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
                 }
             },
             .FunctionCall => {
@@ -747,15 +869,14 @@ const CodeGen = struct {
                             try self.popTemp(reg);
                         } else {
                             const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
-                            if (j < 6) {
-                                try self.popTemp(arg_regs[j]);
-                            } else @panic("More than 6 arguments not supported");
+                            try self.popTemp(arg_regs[j]);
                         }
                     }
                 }
                 if (self.arch == .arm64) {
                     try self.writer.print("    bl _{s}\n", .{node.name.?});
                 } else {
+                    try self.writer.print("    movb $0, %al\n", .{});
                     try self.writer.print("    callq _{s}\n", .{node.name.?});
                 }
             },
@@ -771,16 +892,13 @@ const CodeGen = struct {
                         .Minus => try self.writer.print("    sub x0, x0, x1\n", .{}),
                         .Star => try self.writer.print("    mul x0, x0, x1\n", .{}),
                         .Slash => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
-                        .Percent => {
-                            try self.writer.print("    sdiv x2, x0, x1\n", .{});
-                            try self.writer.print("    msub x0, x2, x1, x0\n", .{});
-                        },
+                        .Percent => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
                         .Ampersand => try self.writer.print("    and x0, x0, x1\n", .{}),
                         .Pipe => try self.writer.print("    orr x0, x0, x1\n", .{}),
                         .Caret => try self.writer.print("    eor x0, x0, x1\n", .{}),
                         .LessLess => try self.writer.print("    lsl x0, x0, x1\n", .{}),
                         .GreaterGreater => try self.writer.print("    asr x0, x0, x1\n", .{}),
-                        else => @panic("Invalid binary operator"),
+                        else => unreachable,
                     }
                 } else {
                     try self.writer.print("    movq %rax, %r10\n", .{});
@@ -789,27 +907,14 @@ const CodeGen = struct {
                         .Plus => try self.writer.print("    addq %r10, %rax\n", .{}),
                         .Minus => try self.writer.print("    subq %r10, %rax\n", .{}),
                         .Star => try self.writer.print("    imulq %r10, %rax\n", .{}),
-                        .Slash => {
-                            try self.writer.print("    cqo\n", .{});
-                            try self.writer.print("    idivq %r10\n", .{});
-                        },
-                        .Percent => {
-                            try self.writer.print("    cqo\n", .{});
-                            try self.writer.print("    idivq %r10\n", .{});
-                            try self.writer.print("    movq %rdx, %rax\n", .{});
-                        },
+                        .Slash => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
+                        .Percent => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
                         .Ampersand => try self.writer.print("    andq %r10, %rax\n", .{}),
                         .Pipe => try self.writer.print("    orq %r10, %rax\n", .{}),
                         .Caret => try self.writer.print("    xorq %r10, %rax\n", .{}),
-                        .LessLess => {
-                            try self.writer.print("    movq %r10, %rcx\n", .{});
-                            try self.writer.print("    shlq %cl, %rax\n", .{});
-                        },
-                        .GreaterGreater => {
-                            try self.writer.print("    movq %r10, %rcx\n", .{});
-                            try self.writer.print("    sarq %cl, %rax\n", .{});
-                        },
-                        else => @panic("Invalid binary operator"),
+                        .LessLess => { try self.writer.print("    movq %r10, %rcx\n    shlq %cl, %rax\n", .{}); },
+                        .GreaterGreater => { try self.writer.print("    movq %r10, %rcx\n    sarq %cl, %rax\n", .{}); },
+                        else => unreachable,
                     }
                 }
             },
@@ -830,13 +935,9 @@ const CodeGen = struct {
                         .LessEqual => try self.writer.print("    b.le {s}\n", .{label_true}),
                         .EqualEqual => try self.writer.print("    b.eq {s}\n", .{label_true}),
                         .NotEqual => try self.writer.print("    b.ne {s}\n", .{label_true}),
-                        else => @panic("Invalid comparison"),
+                        else => unreachable,
                     }
-                    try self.writer.print("    mov x0, #0\n", .{});
-                    try self.writer.print("    b {s}\n", .{label_end});
-                    try self.writer.print("{s}:\n", .{label_true});
-                    try self.writer.print("    mov x0, #1\n", .{});
-                    try self.writer.print("{s}:\n", .{label_end});
+                    try self.writer.print("    mov x0, #0\n    b {s}\n{s}:\n    mov x0, #1\n{s}:\n", .{label_end, label_true, label_end});
                 } else {
                     try self.writer.print("    movq %rax, %r10\n", .{});
                     try self.popTemp("%rax");
@@ -850,13 +951,9 @@ const CodeGen = struct {
                         .LessEqual => try self.writer.print("    jle {s}\n", .{label_true}),
                         .EqualEqual => try self.writer.print("    je {s}\n", .{label_true}),
                         .NotEqual => try self.writer.print("    jne {s}\n", .{label_true}),
-                        else => @panic("Invalid comparison"),
+                        else => unreachable,
                     }
-                    try self.writer.print("    movq $0, %rax\n", .{});
-                    try self.writer.print("    jmp {s}\n", .{label_end});
-                    try self.writer.print("{s}:\n", .{label_true});
-                    try self.writer.print("    movq $1, %rax\n", .{});
-                    try self.writer.print("{s}:\n", .{label_end});
+                    try self.writer.print("    movq $0, %rax\n    jmp {s}\n{s}:\n    movq $1, %rax\n{s}:\n", .{label_end, label_true, label_end});
                 }
             },
             .LogicalOp => {
@@ -864,38 +961,28 @@ const CodeGen = struct {
                 if (node.op.? == .AmpersandAmpersand) {
                     try self.genExpr(node.left.?);
                     if (self.arch == .arm64) {
-                        try self.writer.print("    cmp x0, #0\n", .{});
-                        try self.writer.print("    b.eq {s}\n", .{label_end});
+                        try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{label_end});
                     } else {
-                        try self.writer.print("    cmpq $0, %rax\n", .{});
-                        try self.writer.print("    je {s}\n", .{label_end});
+                        try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{label_end});
                     }
                     try self.genExpr(node.right.?);
                     if (self.arch == .arm64) {
-                        try self.writer.print("    cmp x0, #0\n", .{});
-                        try self.writer.print("    cset x0, ne\n", .{});
+                        try self.writer.print("    cmp x0, #0\n    cset x0, ne\n", .{});
                     } else {
-                        try self.writer.print("    cmpq $0, %rax\n", .{});
-                        try self.writer.print("    setne %al\n", .{});
-                        try self.writer.print("    movzbl %al, %eax\n", .{});
+                        try self.writer.print("    cmpq $0, %rax\n    setne %al\n    movzbl %al, %eax\n", .{});
                     }
-                } else if (node.op.? == .PipePipe) {
+                } else {
                     try self.genExpr(node.left.?);
                     if (self.arch == .arm64) {
-                        try self.writer.print("    cmp x0, #0\n", .{});
-                        try self.writer.print("    b.ne {s}\n", .{label_end});
+                        try self.writer.print("    cmp x0, #0\n    b.ne {s}\n", .{label_end});
                     } else {
-                        try self.writer.print("    cmpq $0, %rax\n", .{});
-                        try self.writer.print("    jne {s}\n", .{label_end});
+                        try self.writer.print("    cmpq $0, %rax\n    jne {s}\n", .{label_end});
                     }
                     try self.genExpr(node.right.?);
                     if (self.arch == .arm64) {
-                        try self.writer.print("    cmp x0, #0\n", .{});
-                        try self.writer.print("    cset x0, ne\n", .{});
+                        try self.writer.print("    cmp x0, #0\n    cset x0, ne\n", .{});
                     } else {
-                        try self.writer.print("    cmpq $0, %rax\n", .{});
-                        try self.writer.print("    setne %al\n", .{});
-                        try self.writer.print("    movzbl %al, %eax\n", .{});
+                        try self.writer.print("    cmpq $0, %rax\n    setne %al\n    movzbl %al, %eax\n", .{});
                     }
                 }
                 try self.writer.print("{s}:\n", .{label_end});
@@ -903,33 +990,18 @@ const CodeGen = struct {
             .UnaryOp => {
                 try self.genExpr(node.right.?);
                 if (node.op.? == .Minus) {
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    neg x0, x0\n", .{});
-                    } else {
-                        try self.writer.print("    negq %rax\n", .{});
-                    }
+                    if (self.arch == .arm64) { try self.writer.print("    neg x0, x0\n", .{}); } else { try self.writer.print("    negq %rax\n", .{}); }
                 } else if (node.op.? == .Bang) {
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    cmp x0, #0\n", .{});
-                        try self.writer.print("    cset x0, eq\n", .{});
-                    } else {
-                        try self.writer.print("    cmpq $0, %rax\n", .{});
-                        try self.writer.print("    sete %al\n", .{});
-                        try self.writer.print("    movzbl %al, %eax\n", .{});
-                    }
+                    if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    cset x0, eq\n", .{}); } else { try self.writer.print("    cmpq $0, %rax\n    sete %al\n    movzbl %al, %eax\n", .{}); }
                 } else if (node.op.? == .Tilde) {
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    mvn x0, x0\n", .{});
-                    } else {
-                        try self.writer.print("    notq %rax\n", .{});
-                    }
+                    if (self.arch == .arm64) { try self.writer.print("    mvn x0, x0\n", .{}); } else { try self.writer.print("    notq %rax\n", .{}); }
                 }
             },
             else => @panic("Invalid expression node"),
         }
     }
 
-    fn genStmt(self: *CodeGen, node: *Node) !void {
+    fn genStmt(self: *CodeGen, node: *Node) anyerror!void {
         switch (node.type) {
             .VarDecl => {
                 if (node.right) |right| {
@@ -944,46 +1016,25 @@ const CodeGen = struct {
                     _ = try self.registerVar(node.name.?);
                 }
             },
-            .Assignment => {
+            .Assignment, .FunctionCall => {
                 try self.genExpr(node);
             },
             .Return => {
                 try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    mov sp, x29\n", .{});
-                    try self.writer.print("    ldp x29, x30, [sp], #16\n", .{});
-                    try self.writer.print("    ret\n", .{});
+                    try self.writer.print("    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n", .{});
                 } else {
-                    try self.writer.print("    movq %rbp, %rsp\n", .{});
-                    try self.writer.print("    popq %rbp\n", .{});
-                    try self.writer.print("    ret\n", .{});
+                    try self.writer.print("    movq %rbp, %rsp\n    popq %rbp\n    ret\n", .{});
                 }
             },
             .If => {
                 const else_label = self.newLabel();
                 const end_label = self.newLabel();
                 try self.genExpr(node.condition.?);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    cmp x0, #0\n", .{});
-                    try self.writer.print("    b.eq {s}\n", .{else_label});
-                } else {
-                    try self.writer.print("    cmpq $0, %rax\n", .{});
-                    try self.writer.print("    je {s}\n", .{else_label});
-                }
-                for (node.body.?) |stmt| {
-                    try self.genStmt(stmt);
-                }
-                if (self.arch == .arm64) {
-                    try self.writer.print("    b {s}\n", .{end_label});
-                } else {
-                    try self.writer.print("    jmp {s}\n", .{end_label});
-                }
-                try self.writer.print("{s}:\n", .{else_label});
-                if (node.else_body) |else_stmts| {
-                    for (else_stmts) |stmt| {
-                        try self.genStmt(stmt);
-                    }
-                }
+                if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{else_label}); } else { try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{else_label}); }
+                for (node.body.?) |stmt| { try self.genStmt(stmt); }
+                try self.writer.print("{s} {s}\n{s}:\n", .{ if (self.arch == .arm64) "    b" else "    jmp", end_label, else_label });
+                if (node.else_body) |else_stmts| { for (else_stmts) |stmt| { try self.genStmt(stmt); } }
                 try self.writer.print("{s}:\n", .{end_label});
             },
             .While => {
@@ -991,22 +1042,9 @@ const CodeGen = struct {
                 const end_label = self.newLabel();
                 try self.writer.print("{s}:\n", .{start_label});
                 try self.genExpr(node.condition.?);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    cmp x0, #0\n", .{});
-                    try self.writer.print("    b.eq {s}\n", .{end_label});
-                } else {
-                    try self.writer.print("    cmpq $0, %rax\n", .{});
-                    try self.writer.print("    je {s}\n", .{end_label});
-                }
-                for (node.body.?) |stmt| {
-                    try self.genStmt(stmt);
-                }
-                if (self.arch == .arm64) {
-                    try self.writer.print("    b {s}\n", .{start_label});
-                } else {
-                    try self.writer.print("    jmp {s}\n", .{start_label});
-                }
-                try self.writer.print("{s}:\n", .{end_label});
+                if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{end_label}); } else { try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{end_label}); }
+                for (node.body.?) |stmt| { try self.genStmt(stmt); }
+                try self.writer.print("{s} {s}\n{s}:\n", .{ if (self.arch == .arm64) "    b" else "    jmp", start_label, end_label });
             },
             .For => {
                 const start_label = self.newLabel();
@@ -1014,26 +1052,10 @@ const CodeGen = struct {
                 try self.genStmt(node.init.?);
                 try self.writer.print("{s}:\n", .{start_label});
                 try self.genExpr(node.condition.?);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    cmp x0, #0\n", .{});
-                    try self.writer.print("    b.eq {s}\n", .{end_label});
-                } else {
-                    try self.writer.print("    cmpq $0, %rax\n", .{});
-                    try self.writer.print("    je {s}\n", .{end_label});
-                }
-                for (node.body.?) |stmt| {
-                    try self.genStmt(stmt);
-                }
+                if (self.arch == .arm64) { try self.writer.print("    cmp x0, #0\n    b.eq {s}\n", .{end_label}); } else { try self.writer.print("    cmpq $0, %rax\n    je {s}\n", .{end_label}); }
+                for (node.body.?) |stmt| { try self.genStmt(stmt); }
                 try self.genExpr(node.update.?);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    b {s}\n", .{start_label});
-                } else {
-                    try self.writer.print("    jmp {s}\n", .{start_label});
-                }
-                try self.writer.print("{s}:\n", .{end_label});
-            },
-            .FunctionCall => {
-                try self.genExpr(node);
+                try self.writer.print("{s} {s}\n{s}:\n", .{ if (self.arch == .arm64) "    b" else "    jmp", start_label, end_label });
             },
             else => @panic("Invalid statement node"),
         }
@@ -1042,23 +1064,13 @@ const CodeGen = struct {
     fn genFunction(self: *CodeGen, node: *Node) !void {
         self.vars.clearRetainingCapacity();
         self.stack_pos = 0;
-        self.temp_stack_pos = -128; // Reset for each function
-
+        self.temp_stack_pos = -128;
         try self.writer.print(".globl _{s}\n", .{node.name.?});
         if (self.arch == .arm64) {
-            try self.writer.print(".p2align 2\n", .{});
-            try self.writer.print("_{s}:\n", .{node.name.?});
-            try self.writer.print("    stp x29, x30, [sp, #-16]!\n", .{});
-            try self.writer.print("    mov x29, sp\n", .{});
-            try self.writer.print("    sub sp, sp, #512\n", .{});
+            try self.writer.print(".p2align 2\n_{s}:\n    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    sub sp, sp, #512\n", .{node.name.?});
         } else {
-            try self.writer.print(".p2align 4, 0x90\n", .{});
-            try self.writer.print("_{s}:\n", .{node.name.?});
-            try self.writer.print("    pushq %rbp\n", .{});
-            try self.writer.print("    movq %rsp, %rbp\n", .{});
-            try self.writer.print("    subq $512, %rsp\n", .{});
+            try self.writer.print(".p2align 4, 0x90\n_{s}:\n    pushq %rbp\n    movq %rsp, %rbp\n    subq $512, %rsp\n", .{node.name.?});
         }
-
         if (node.params) |params| {
             for (params, 0..) |param, idx| {
                 const offset = try self.registerVar(param);
@@ -1066,35 +1078,49 @@ const CodeGen = struct {
                     try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, offset});
                 } else {
                     const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
-                    if (idx < 6) {
-                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
-                    }
+                    try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], offset});
                 }
             }
         }
-
-        for (node.body.?) |stmt| {
-            try self.genStmt(stmt);
-        }
-
+        for (node.body.?) |stmt| { try self.genStmt(stmt); }
         if (self.arch == .arm64) {
-            try self.writer.print("    mov x0, #0\n", .{});
-            try self.writer.print("    mov sp, x29\n", .{});
-            try self.writer.print("    ldp x29, x30, [sp], #16\n", .{});
-            try self.writer.print("    ret\n", .{});
+            try self.writer.print("    mov x0, #0\n    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n", .{});
         } else {
-            try self.writer.print("    xorq %rax, %rax\n", .{});
-            try self.writer.print("    movq %rbp, %rsp\n", .{});
-            try self.writer.print("    popq %rbp\n", .{});
-            try self.writer.print("    ret\n", .{});
+            try self.writer.print("    xorq %rax, %rax\n    movq %rbp, %rsp\n    popq %rbp\n    ret\n", .{});
         }
     }
 
     fn genProgram(self: *CodeGen, nodes: []*Node) !void {
+        for (nodes) |node| {
+            if (node.type == .VarDecl) {
+                try self.globals.put(node.name.?, node.init_value);
+            }
+        }
         try self.writer.print(".text\n", .{});
         for (nodes) |node| {
             if (node.type == .Function) {
                 try self.genFunction(node);
+            }
+        }
+        if (self.strings.items.len > 0) {
+            try self.writer.print(".section __TEXT,__cstring,cstring_literals\n", .{});
+            for (self.strings.items, 0..) |str, i| {
+                try self.writer.print("L_.str.{}: .asciz \"{s}\"\n", .{i, str});
+            }
+        }
+        if (self.globals.count() > 0) {
+            var it = self.globals.iterator();
+            while (it.next()) |entry| {
+                const name = entry.key_ptr.*;
+                if (entry.value_ptr.*) |val| {
+                    try self.writer.print(".section __DATA,__data\n", .{});
+                    try self.writer.print(".globl _{s}\n", .{name});
+                    try self.writer.print(".p2align 3\n", .{});
+                    try self.writer.print("_{s}:\n", .{name});
+                    try self.writer.print("    .quad {}\n", .{val});
+                } else {
+                    try self.writer.print(".comm _{s}, 8, 3\n", .{name});
+                }
             }
         }
     }
@@ -1104,52 +1130,28 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-
     var arch: Arch = if (builtin.cpu.arch == .aarch64) .arm64 else .x86_64;
     var input_file: ?[]const u8 = null;
-
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--arch")) {
             i += 1;
             if (i < args.len) {
-                if (std.mem.eql(u8, args[i], "x86_64")) {
-                    arch = .x86_64;
-                } else if (std.mem.eql(u8, args[i], "arm64")) {
-                    arch = .arm64;
-                } else {
-                    std.debug.print("Unknown architecture: {s}\n", .{args[i]});
-                    std.process.exit(1);
-                }
+                if (std.mem.eql(u8, args[i], "x86_64")) { arch = .x86_64; }
+                else if (std.mem.eql(u8, args[i], "arm64")) { arch = .arm64; }
             }
-        } else {
-            input_file = args[i];
-        }
+        } else { input_file = args[i]; }
     }
-
-    const source = if (input_file) |path| try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) else
-        \\int add(int a, int b) {
-        \\    return a + b;
-        \\}
-        \\
-        \\int main() {
-        \\    int x = add(10, 32);
-        \\    return x;
-        \\}
-    ;
+    const source = if (input_file) |path| try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) else "int main() { return 42; }";
     var lexer = Lexer.init(source);
     var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
-
     while (true) {
         const token = lexer.nextToken();
         try tokens.append(token);
         if (token.type == .EOF) break;
     }
-
     var parser = Parser.init(try tokens.toOwnedSlice(), allocator);
     const ast = try parser.parseProgram();
-
     const file = try std.fs.cwd().createFile("out.asm", .{});
     defer file.close();
     var codegen = CodeGen.init(file.writer(), allocator, arch);

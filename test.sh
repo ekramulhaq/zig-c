@@ -57,6 +57,10 @@ EXAMPLES=(
     "examples/new_features.simple:43"
     "examples/bitwise_compound.simple:43"
     "examples/functions.simple:11"
+    "examples/pointers.simple:100"
+    "examples/globals.simple:42"
+    "examples/printf.simple:0"
+    "examples/exit.simple:42"
 )
 
 TOTAL_PASS=0

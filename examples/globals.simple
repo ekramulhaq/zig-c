@@ -1,0 +1,6 @@
+int g = 10;
+
+int main() {
+    g += 32;
+    return g; // Should return 42
+}

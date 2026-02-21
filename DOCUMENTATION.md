@@ -5,56 +5,66 @@ This document summarizes the development and current state of the Zig-based comp
 ## Project Overview
 The project is a hand-written compiler for a subset of the C language, implemented in Zig. It translates high-level source code into assembly language for macOS, supporting both Intel (x86_64) and Apple Silicon (ARM64) architectures.
 
-## What Has Been Done
+## Features Implemented
 
-### 1. Core Compiler Infrastructure
-- **Lexer**: Tokenizes source text into a stream of tokens (Keywords, Identifiers, Numbers, Operators, Braces).
-- **Parser**: A recursive descent parser that constructs an Abstract Syntax Tree (AST). It handles:
-    - Variable declarations and assignments.
-    - Arithmetic expressions (with operator precedence).
-    - Control flow (`if/else`, `while`, `for` loops).
-    - Return statements.
-- **Code Generator**: A multi-target backend that emits assembly code.
+### 1. Core Language Constructs
+- **Data Types**: Integers (`int`) and Pointers (`int *p`).
+- **Operators**:
+    - Arithmetic: `+, -, *, /, %`
+    - Bitwise: `&, |, ^, ~, <<, >>`
+    - Comparison: `==, !=, >, <, >=, <=`
+    - Logical: `&&, ||, !`
+    - Unary: `- (negation), ~ (bitwise NOT), ! (logical NOT)`
+- **Assignments**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=`).
+- **Control Flow**: `if/else`, `while` loops, `for` loops.
+- **Function Support**: 
+    - Multiple parameters (up to 6 on x86_64, 8 on ARM64 via registers).
+    - Recursive calls.
+    - External function calls (e.g., `printf`, `exit`).
+- **Memory**:
+    - Local variables (stack-allocated).
+    - Global variables (initialized and uninitialized).
+    - Pointers (`&` address-of, `*` dereference).
+- **Strings**: String literals support (stored in `__cstring` section).
+- **Comments**: Single-line comments (`//`).
 
 ### 2. Multi-Architecture Support
-The compiler now supports two primary architectures through a command-line flag (`--arch`):
+The compiler targets macOS on two architectures:
 
 #### **ARM64 (Apple Silicon)**
 - Emits **A64 assembly**.
-- Implements 16-byte stack alignment required by the macOS ARM64 ABI using `stp` and `ldp` instructions.
-- Uses PC-relative addressing via `adrp` and `@PAGE/@PAGEOFF` relocations for global variable access.
-- Correctly handles the ARM64 calling convention (return values in `x0`).
+- Implements 16-byte stack alignment.
+- Uses PC-relative addressing (`adrp`, `@PAGE`) for globals and string literals.
+- Follows standard calling convention (registers `x0-x7`).
 
 #### **x86_64 (Intel)**
-- Emits **AT&T syntax assembly** (compatible with native macOS `clang` and `as`).
-- Uses RIP-relative addressing for global variables.
-- Correctly handles the x86_64 system call interface for macOS (using `0x2000001` for exit).
+- Emits **AT&T syntax assembly**.
+- Maintains strict 16-byte stack alignment.
+- Uses caller-saved registers (`%r10`) for temporaries to avoid ABI violations.
+- Implements standard x86_64 calling convention (registers `rdi, rsi, ...`).
 
-### 3. Critical Fixes and Improvements
-- **Parser Robustness**: Fixed recursive error set inference issues in Zig that prevented the compiler from building.
-- **Arithmetic Logic**: Corrected the operand order for subtraction and division in the generated assembly.
-- **String Formatting**: Fixed runtime panics by using correct Zig format specifiers (`{s}`) for string slices.
-- **CLI Enhancements**: Added support for reading source code from external files and selecting the target architecture at runtime.
+### 3. Compilation Infrastructure
+- **Lexer**: Hand-written scanner with support for multi-character tokens and strings.
+- **Parser**: Recursive descent parser implementing standard C operator precedence (13 levels).
+- **Code Generator**: Stack-offset based backend that manages a 512-byte stack frame per function.
 
-### 4. Testing and Verification
-- **Automated Test Suite**: Created `test.sh`, which automates the entire lifecycle:
-    1. Builds the compiler.
-    2. Compiles multiple test cases (`examples/*.simple`).
-    3. Assembles and links for both `arm64` and `x86_64`.
-    4. Verifies the execution result via exit codes.
-- **Example Programs**: Created a library of examples covering loops, nested logic, and complex arithmetic.
-
-## Current Project State
-The project is currently in a **fully verified, functional state**. It successfully cross-compiles and executes a range of logic-heavy programs on macOS across both modern hardware architectures.
+## Testing and Verification
+- **Automated Test Suite**: `test.sh` verifies 22 test cases across both architectures.
+- **Example Programs**:
+    - `loop.simple`: While loops and accumulation.
+    - `functions.simple`: Recursive Fibonacci and multi-argument calls.
+    - `pointers.simple`: Pointer arithmetic and dereferencing.
+    - `globals.simple`: Initialized global variable state.
+    - `printf.simple`: External variadic call demonstration.
 
 ## Usage
 ### Compile a file
 ```bash
 # To ARM64
-zig build run -- examples/loop.simple --arch arm64
+zig build run -- examples/pointers.simple --arch arm64
 
 # To x86_64
-zig build run -- examples/loop.simple --arch x86_64
+zig build run -- examples/pointers.simple --arch x86_64
 ```
 
 ### Run the full test suite

@@ -1,0 +1,4 @@
+int main() {
+    printf("Hello, %s! The answer is %d.", "world", 42);
+    return 0;
+}
