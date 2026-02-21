@@ -62,6 +62,8 @@ EXAMPLES=(
     "examples/printf.simple:0"
     "examples/exit.simple:42"
     "examples/complex.simple:42"
+    "examples/optimize.simple:51"
+    "examples/sieve.simple:100"
 )
 
 TOTAL_PASS=0

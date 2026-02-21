@@ -63,7 +63,6 @@ pub const Parser = struct {
                         node.* = Node{ .type = .Assignment, .left = left.right, .op = token.type, .right = right };
                     } else {
                         // Array indexing: a[i] = val
-                        // Treat as *(a + i) = val
                         node.* = Node{ .type = .Assignment, .left = left, .op = token.type, .right = right };
                     }
                     return node;
@@ -292,11 +291,26 @@ pub const Parser = struct {
         @panic("Expected number, identifier, or (");
     }
 
+    fn parseBlock(self: *Parser) anyerror![]*Node {
+        if (self.consume(.LBrace)) {
+            var body = std.ArrayList(*Node).init(self.allocator);
+            while (self.current()) |t| {
+                if (t.type == .RBrace) break;
+                try body.append(try self.parseStmt());
+            }
+            try self.expect(.RBrace, "Expected } after block");
+            return try body.toOwnedSlice();
+        } else {
+            var body = std.ArrayList(*Node).init(self.allocator);
+            try body.append(try self.parseStmt());
+            return try body.toOwnedSlice();
+        }
+    }
+
     fn parseStmt(self: *Parser) anyerror!*Node {
         const token = self.current() orelse @panic("Unexpected EOF");
         if (token.type == .IntKeyword) {
             self.advance();
-            // Handle pointer stars: int **p
             while (self.consume(.Star)) {}
             const ident = self.current() orelse @panic("Expected identifier");
             if (ident.type != .Identifier) @panic("Expected identifier");
@@ -337,41 +351,22 @@ pub const Parser = struct {
             try self.expect(.LParen, "Expected (");
             const cond = try self.parseExpr();
             try self.expect(.RParen, "Expected )");
-            try self.expect(.LBrace, "Expected {");
-            var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current()) |t| {
-                if (t.type == .RBrace) break;
-                try body.append(try self.parseStmt());
-            }
-            try self.expect(.RBrace, "Expected } after if body");
+            const body = try self.parseBlock();
             var else_body: ?[]*Node = null;
             if (self.consume(.ElseKeyword)) {
-                try self.expect(.LBrace, "Expected {");
-                var else_stmts = std.ArrayList(*Node).init(self.allocator);
-                while (self.current()) |t| {
-                    if (t.type == .RBrace) break;
-                    try else_stmts.append(try self.parseStmt());
-                }
-                try self.expect(.RBrace, "Expected } after else body");
-                else_body = try else_stmts.toOwnedSlice();
+                else_body = try self.parseBlock();
             }
             const node = try self.allocator.create(Node);
-            node.* = Node{ .type = .If, .condition = cond, .body = try body.toOwnedSlice(), .else_body = else_body };
+            node.* = Node{ .type = .If, .condition = cond, .body = body, .else_body = else_body };
             return node;
         } else if (token.type == .WhileKeyword) {
             self.advance();
             try self.expect(.LParen, "Expected (");
             const cond = try self.parseExpr();
             try self.expect(.RParen, "Expected )");
-            try self.expect(.LBrace, "Expected {");
-            var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current()) |t| {
-                if (t.type == .RBrace) break;
-                try body.append(try self.parseStmt());
-            }
-            try self.expect(.RBrace, "Expected } after while body");
+            const body = try self.parseBlock();
             const node = try self.allocator.create(Node);
-            node.* = Node{ .type = .While, .condition = cond, .body = try body.toOwnedSlice() };
+            node.* = Node{ .type = .While, .condition = cond, .body = body };
             return node;
         } else if (token.type == .ForKeyword) {
             self.advance();
@@ -381,16 +376,18 @@ pub const Parser = struct {
             try self.expect(.Semicolon, "Expected ;");
             const update = try self.parseExpr();
             try self.expect(.RParen, "Expected )");
-            try self.expect(.LBrace, "Expected {");
-            var body = std.ArrayList(*Node).init(self.allocator);
-            while (self.current()) |t| {
-                if (t.type == .RBrace) break;
-                try body.append(try self.parseStmt());
-            }
-            try self.expect(.RBrace, "Expected } after for body");
+            const body = try self.parseBlock();
             const node = try self.allocator.create(Node);
-            node.* = Node{ .type = .For, .init = init_stmt, .condition = cond, .update = update, .body = try body.toOwnedSlice() };
+            node.* = Node{ .type = .For, .init = init_stmt, .condition = cond, .update = update, .body = body };
             return node;
+        } else if (token.type == .LBrace) {
+            const body = try self.parseBlock();
+            // Since our NodeType doesn't have a Block type, we just return the first node?
+            // Actually, we should probably add a Block NodeType.
+            // For now, let's just use If with true condition as a hack, or fix it properly.
+            // Better: parseBlock returning Node*.
+            _ = body;
+            @panic("Blocks as standalone statements not fully supported yet");
         } else {
             const expr = try self.parseExpr();
             try self.expect(.Semicolon, "Expected ; after expression");
@@ -400,7 +397,7 @@ pub const Parser = struct {
 
     fn parseFunction(self: *Parser) anyerror!*Node {
         try self.expect(.IntKeyword, "Only int return type is supported");
-        while (self.consume(.Star)) {} // Allow int*
+        while (self.consume(.Star)) {}
         const ident = self.current() orelse @panic("Expected function name");
         self.advance();
         try self.expect(.LParen, "Expected ( after function name");
@@ -408,7 +405,7 @@ pub const Parser = struct {
         if (!self.consume(.RParen)) {
             while (true) {
                 try self.expect(.IntKeyword, "Only int parameters are supported");
-                while (self.consume(.Star)) {} // Allow int*
+                while (self.consume(.Star)) {}
                 const p_ident = self.current() orelse @panic("Expected parameter name");
                 self.advance();
                 try params.append(p_ident.value);

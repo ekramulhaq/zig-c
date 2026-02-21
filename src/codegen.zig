@@ -5,12 +5,17 @@ const common = @import("common.zig");
 const Node = ast.Node;
 const Arch = common.Arch;
 
+const Global = struct {
+    size: i32,
+    init_value: ?i64,
+};
+
 /// CodeGen converts an AST into assembly code.
 pub const CodeGen = struct {
     writer: std.fs.File.Writer,
     label_count: usize,
     vars: std.StringHashMap(i32),
-    globals: std.StringHashMap(?i64),
+    globals: std.StringHashMap(Global),
     strings: std.ArrayList([]const u8),
     stack_pos: i32,
     temp_stack_pos: i32,
@@ -23,7 +28,7 @@ pub const CodeGen = struct {
             .writer = writer,
             .label_count = 0,
             .vars = std.StringHashMap(i32).init(allocator),
-            .globals = std.StringHashMap(?i64).init(allocator),
+            .globals = std.StringHashMap(Global).init(allocator),
             .strings = std.ArrayList([]const u8).init(allocator),
             .stack_pos = 0,
             .temp_stack_pos = -128,
@@ -34,7 +39,7 @@ pub const CodeGen = struct {
 
     fn pushTemp(self: *CodeGen) !void {
         if (self.arch == .arm64) {
-            try self.writer.print("    str x0, [x29, #{}]\n", .{self.temp_stack_pos});
+            try self.emitStore("x0", self.temp_stack_pos);
         } else {
             try self.writer.print("    movq %rax, {}(%rbp)\n", .{self.temp_stack_pos});
         }
@@ -44,9 +49,35 @@ pub const CodeGen = struct {
     fn popTemp(self: *CodeGen, reg: []const u8) !void {
         self.temp_stack_pos += 8;
         if (self.arch == .arm64) {
-            try self.writer.print("    ldr {s}, [x29, #{}]\n", .{reg, self.temp_stack_pos});
+            try self.emitLoad(reg, self.temp_stack_pos);
         } else {
             try self.writer.print("    movq {}(%rbp), {s}\n", .{self.temp_stack_pos, reg});
+        }
+    }
+
+    fn emitLoad(self: *CodeGen, reg: []const u8, offset: i32) !void {
+        if (self.arch == .arm64) {
+            if (offset >= -256 and offset <= 255) {
+                try self.writer.print("    ldr {s}, [x29, #{}]\n", .{reg, offset});
+            } else {
+                try self.writer.print("    mov x9, #{}\n", .{offset});
+                try self.writer.print("    ldr {s}, [x29, x9]\n", .{reg});
+            }
+        } else {
+            try self.writer.print("    movq {}(%rbp), {s}\n", .{offset, reg});
+        }
+    }
+
+    fn emitStore(self: *CodeGen, reg: []const u8, offset: i32) !void {
+        if (self.arch == .arm64) {
+            if (offset >= -256 and offset <= 255) {
+                try self.writer.print("    str {s}, [x29, #{}]\n", .{reg, offset});
+            } else {
+                try self.writer.print("    mov x9, #{}\n", .{offset});
+                try self.writer.print("    str {s}, [x29, x9]\n", .{reg});
+            }
+        } else {
+            try self.writer.print("    movq {s}, {}(%rbp)\n", .{reg, offset});
         }
     }
 
@@ -69,11 +100,16 @@ pub const CodeGen = struct {
             .Identifier => {
                 if (self.vars.get(node.name.?)) |offset| {
                     if (self.arch == .arm64) {
-                        try self.writer.print("    add x0, x29, #{}\n", .{offset});
+                        if (offset >= -4095 and offset <= 4095) {
+                            try self.writer.print("    add x0, x29, #{}\n", .{offset});
+                        } else {
+                            try self.writer.print("    mov x9, #{}\n", .{offset});
+                            try self.writer.print("    add x0, x29, x9\n", .{});
+                        }
                     } else {
                         try self.writer.print("    leaq {}(%rbp), %rax\n", .{offset});
                     }
-                } else if (self.globals.contains(node.name.?)) {
+                } else if (self.globals.get(node.name.?)) |_| {
                     if (self.arch == .arm64) {
                         try self.writer.print("    adrp x0, _{s}@PAGE\n", .{node.name.?});
                         try self.writer.print("    add x0, x0, _{s}@PAGEOFF\n", .{node.name.?});
@@ -87,16 +123,16 @@ pub const CodeGen = struct {
             },
             .Index => {
                 try self.genAddr(node.left.?);
-                try self.pushTemp();
-                try self.genExpr(node.right.?);
+                try self.pushTemp(); // Base address
+                try self.genExpr(node.right.?); // Index
                 if (self.arch == .arm64) {
                     try self.writer.print("    lsl x1, x0, #3\n", .{}); // index * 8
-                    try self.popTemp("x0");
+                    try self.popTemp("x0"); // base address
                     try self.writer.print("    add x0, x0, x1\n", .{});
                 } else {
-                    try self.writer.print("    shlq $3, %rax\n", .{});
+                    try self.writer.print("    shlq $3, %rax\n", .{}); // index * 8
                     try self.writer.print("    movq %rax, %r10\n", .{});
-                    try self.popTemp("%rax");
+                    try self.popTemp("%rax"); // base address
                     try self.writer.print("    addq %r10, %rax\n", .{});
                 }
             },
@@ -115,12 +151,8 @@ pub const CodeGen = struct {
             },
             .Identifier => {
                 if (self.vars.get(node.name.?)) |offset| {
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
-                    } else {
-                        try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
-                    }
-                } else if (self.globals.contains(node.name.?)) {
+                    try self.emitLoad(if (self.arch == .arm64) "x0" else "%rax", offset);
+                } else if (self.globals.get(node.name.?)) |_| {
                     if (self.arch == .arm64) {
                         try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
                         try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
@@ -172,11 +204,7 @@ pub const CodeGen = struct {
                                 try self.writer.print("    movq _{s}(%rip), %rax\n", .{name});
                             }
                         } else {
-                            if (self.arch == .arm64) {
-                                try self.writer.print("    ldr x0, [x29, #{}]\n", .{offset});
-                            } else {
-                                try self.writer.print("    movq {}(%rbp), %rax\n", .{offset});
-                            }
+                            try self.emitLoad(if (self.arch == .arm64) "x0" else "%rax", offset);
                         }
                         try self.pushTemp();
                         try self.genExpr(node.right.?);
@@ -211,14 +239,9 @@ pub const CodeGen = struct {
                             try self.writer.print("    movq %rax, _{s}(%rip)\n", .{name});
                         }
                     } else {
-                        if (self.arch == .arm64) {
-                            try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
-                        } else {
-                            try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
-                        }
+                        try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", offset);
                     }
                 } else if (node.left) |addr_node| {
-                    // This handles both *p = val and a[i] = val
                     if (addr_node.type == .Index) {
                         try self.genAddr(addr_node);
                     } else {
@@ -372,33 +395,22 @@ pub const CodeGen = struct {
             },
             .UnaryOp => {
                 if (node.op.? == .PlusPlus or node.op.? == .MinusMinus) {
-                    // Prefix ++ and --
                     try self.genAddr(node.right.?);
                     try self.pushTemp();
                     if (self.arch == .arm64) {
                         try self.writer.print("    ldr x0, [x0]\n", .{});
-                        if (node.op.? == .PlusPlus) {
-                            try self.writer.print("    add x0, x0, #1\n", .{});
-                        } else {
-                            try self.writer.print("    sub x0, x0, #1\n", .{});
-                        }
+                        if (node.op.? == .PlusPlus) { try self.writer.print("    add x0, x0, #1\n", .{}); } else { try self.writer.print("    sub x0, x0, #1\n", .{}); }
                         try self.pushTemp();
                         try self.popTemp("x1"); // new value
                         try self.popTemp("x0"); // address
-                        try self.writer.print("    str x1, [x0]\n", .{});
-                        try self.writer.print("    mov x0, x1\n", .{});
+                        try self.writer.print("    str x1, [x0]\n    mov x0, x1\n", .{});
                     } else {
                         try self.writer.print("    movq (%rax), %rax\n", .{});
-                        if (node.op.? == .PlusPlus) {
-                            try self.writer.print("    incq %rax\n", .{});
-                        } else {
-                            try self.writer.print("    decq %rax\n", .{});
-                        }
+                        if (node.op.? == .PlusPlus) { try self.writer.print("    incq %rax\n", .{}); } else { try self.writer.print("    decq %rax\n", .{}); }
                         try self.pushTemp();
                         try self.popTemp("%r10"); // new value
                         try self.popTemp("%rax"); // address
-                        try self.writer.print("    movq %r10, (%rax)\n", .{});
-                        try self.writer.print("    movq %r10, %rax\n", .{});
+                        try self.writer.print("    movq %r10, (%rax)\n    movq %r10, %rax\n", .{});
                     }
                 } else {
                     try self.genExpr(node.right.?);
@@ -421,11 +433,7 @@ pub const CodeGen = struct {
                 if (node.right) |right| {
                     try self.genExpr(right);
                     const offset = try self.registerVar(node.name.?, 8);
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    str x0, [x29, #{}]\n", .{offset});
-                    } else {
-                        try self.writer.print("    movq %rax, {}(%rbp)\n", .{offset});
-                    }
+                    try self.emitStore(if (self.arch == .arm64) "x0" else "%rax", offset);
                 } else {
                     _ = try self.registerVar(node.name.?, 8);
                 }
@@ -513,7 +521,9 @@ pub const CodeGen = struct {
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
         for (nodes) |node| {
             if (node.type == .VarDecl) {
-                try self.globals.put(node.name.?, node.init_value);
+                try self.globals.put(node.name.?, .{ .size = 8, .init_value = node.init_value });
+            } else if (node.type == .ArrayDecl) {
+                try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * 8), .init_value = null });
             }
         }
         try self.writer.print(".text\n", .{});
@@ -532,14 +542,11 @@ pub const CodeGen = struct {
             var it = self.globals.iterator();
             while (it.next()) |entry| {
                 const name = entry.key_ptr.*;
-                if (entry.value_ptr.*) |val| {
-                    try self.writer.print(".section __DATA,__data\n", .{});
-                    try self.writer.print(".globl _{s}\n", .{name});
-                    try self.writer.print(".p2align 3\n", .{});
-                    try self.writer.print("_{s}:\n", .{name});
-                    try self.writer.print("    .quad {}\n", .{val});
+                const g = entry.value_ptr.*;
+                if (g.init_value) |val| {
+                    try self.writer.print(".section __DATA,__data\n.globl _{s}\n.p2align 3\n_{s}:\n    .quad {}\n", .{name, name, val});
                 } else {
-                    try self.writer.print(".comm _{s}, 8, 3\n", .{name});
+                    try self.writer.print(".comm _{s}, {}, 3\n", .{name, g.size});
                 }
             }
         }
