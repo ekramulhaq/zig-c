@@ -18,7 +18,7 @@ This document provides a comprehensive guide to the Simple Compiler, its feature
 ---
 
 ## Overview
-The Simple Compiler is a hand-written compiler for a subset of the C language, implemented in Zig. It targets macOS (both ARM64 and x86_64 architectures) and produces assembly code compatible with the system assembler (`clang`).
+The Simple Compiler is a hand-written compiler for a subset of the C language, implemented in Zig. It targets macOS (both ARM64 and x86_64 architectures) and produces assembly code compatible with the system assembler (`clang`). It supports multiple file inclusion via the `#include` directive and provides a basic standard library.
 
 ---
 
@@ -60,10 +60,24 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 ### Functions and Declarations
 - Multiple variable declarations in a single line (e.g., `int a, b = 10, *c;`).
 - Support for multiple parameters and local variable declarations.
+- Support for function prototypes (declarations without bodies) ending in `;`.
+- Variadic functions (e.g., `int printf(char *format, ...);`) are supported in declarations.
 - Recursive function calls are fully supported.
 - External function calling (e.g., `printf`, `exit`, `malloc`).
 - **ARM64**: Uses registers `x0-x7` for the first 8 arguments.
 - **x86_64**: Uses `rdi, rsi, rdx, rcx, r8, r9` for the first 6 arguments.
+
+### Preprocessor and Includes
+The compiler includes a built-in preprocessor that handles the following directives:
+- **`#include "file.h"`**: Includes a local header file. Searches in the current directory, then in system include directories.
+- **`#include <file.h>`**: Includes a system header file. Searches in the `include/` directory and any directories specified with `-I`.
+
+The compiler prevents multiple inclusions of the same file by tracking absolute file paths.
+
+### Standard Library
+A basic standard library is provided in the `include/` directory:
+- **`stdio.h`**: Declarations for `printf`, `puts`, `getchar`, `putchar`, `sprintf`, `snprintf`.
+- **`stdlib.h`**: Declarations for `exit`, `malloc`, `free`, `calloc`, `realloc`, `atoi`, `atol`, `memset`, `memcpy`.
 
 ### Memory and Structs
 - Local variables are stack-allocated within the function's scope.
@@ -115,6 +129,9 @@ zig build
 
 # Target x86_64
 ./zig-out/bin/compiler --arch x86_64 input.simple
+
+# Specify additional include directories
+./zig-out/bin/compiler -I my_headers input.simple
 ```
 
 ### 3. Assemble and Run

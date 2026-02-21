@@ -5,6 +5,7 @@ const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const codegen = @import("codegen.zig");
 const optimizer = @import("optimizer.zig");
+const preprocessor = @import("preprocessor.zig");
 
 const Arch = common.Arch;
 const Lexer = lexer.Lexer;
@@ -12,6 +13,7 @@ const Token = lexer.Token;
 const Parser = parser.Parser;
 const CodeGen = codegen.CodeGen;
 const Optimizer = optimizer.Optimizer;
+const Preprocessor = preprocessor.Preprocessor;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -23,6 +25,8 @@ pub fn main() !void {
     var dump_tokens = false;
     var dump_ast = false;
     var asm_comments = false;
+    var include_dirs = std.ArrayList([]const u8).init(allocator);
+    defer include_dirs.deinit();
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -38,6 +42,11 @@ pub fn main() !void {
                     std.process.exit(1);
                 }
             }
+        } else if (std.mem.eql(u8, args[i], "-I")) {
+            i += 1;
+            if (i < args.len) {
+                try include_dirs.append(args[i]);
+            }
         } else if (std.mem.eql(u8, args[i], "--dump-tokens")) {
             dump_tokens = true;
         } else if (std.mem.eql(u8, args[i], "--dump-ast")) {
@@ -49,7 +58,17 @@ pub fn main() !void {
         }
     }
 
-    const source = if (input_file) |path| try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) else "int main() { return 42; }";
+    var prep = try Preprocessor.create(allocator);
+    defer prep.deinit();
+    for (include_dirs.items) |dir| {
+        try prep.addIncludeDir(dir);
+    }
+
+    const source = if (input_file) |path| prep.preprocessFile(path) catch |err| {
+        std.debug.print("Preprocessing Error: {}\n", .{err});
+        std.process.exit(1);
+    } else try prep.preprocessSource("int main() { return 42; }", ".");
+
     var lex = Lexer.init(source);
     var tokens = std.ArrayList(Token).init(allocator);
     defer tokens.deinit();

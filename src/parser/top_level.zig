@@ -100,8 +100,13 @@ pub const TopLevelParser = struct {
         var params_types = std.ArrayList(ast.DataType).init(self.base.allocator);
         var params_is_pointer = std.ArrayList(bool).init(self.base.allocator);
         var params_struct_names = std.ArrayList(?[]const u8).init(self.base.allocator);
+        var is_variadic = false;
         if (!self.base.consume(.RParen)) {
             while (true) {
+                if (self.base.consume(.Ellipsis)) {
+                    is_variadic = true;
+                    break;
+                }
                 const param_type_token = self.base.current() orelse return error.UnexpectedEOF;
                 var param_type: ast.DataType = .Int;
                 var param_struct_name: ?[]const u8 = null;
@@ -120,22 +125,54 @@ pub const TopLevelParser = struct {
                 while (self.base.consume(.Star)) { param_pointer_level += 1; }
                 try params_is_pointer.append(param_pointer_level > 0);
 
-                try params.append(try self.base.expectIdentifier("Expected parameter name"));
+                if (self.base.current()) |token| {
+                    if (token.type == .Identifier) {
+                        try params.append(try self.base.expectIdentifier("Expected parameter name"));
+                    } else {
+                        // In prototypes, parameter names are optional.
+                        try params.append("");
+                    }
+                } else {
+                    try params.append("");
+                }
+                
                 if (!self.base.consume(.Comma)) break;
             }
             try self.base.expect(.RParen, "Expected ) after function parameters");
         }
-        try self.base.expect(.LBrace, "Expected { to start function body");
-        var body = std.ArrayList(*Node).init(self.base.allocator);
-        while (self.base.current()) |t| {
-            if (t.type == .RBrace) break;
-            if (try self.stmt_p.parseStmt()) |stmt| {
-                try body.append(stmt);
+        
+        var body: ?[]*Node = null;
+        var is_prototype = false;
+        if (self.base.consume(.Semicolon)) {
+            is_prototype = true;
+        } else {
+            try self.base.expect(.LBrace, "Expected { to start function body");
+            var body_list = std.ArrayList(*Node).init(self.base.allocator);
+            while (self.base.current()) |t| {
+                if (t.type == .RBrace) break;
+                if (try self.stmt_p.parseStmt()) |stmt| {
+                    try body_list.append(stmt);
+                }
             }
+            try self.base.expect(.RBrace, "Expected } to end function body");
+            body = try body_list.toOwnedSlice();
         }
-        try self.base.expect(.RBrace, "Expected } to end function body");
+        
         const node = try self.base.allocator.create(Node);
-        node.* = Node{ .type = .Function, .data_type = ret_type, .is_pointer = ret_is_pointer, .struct_name = ret_struct_name, .name = ident, .params = try params.toOwnedSlice(), .params_types = try params_types.toOwnedSlice(), .params_is_pointer = try params_is_pointer.toOwnedSlice(), .params_struct_names = try params_struct_names.toOwnedSlice(), .body = try body.toOwnedSlice() };
+        node.* = Node{
+            .type = .Function,
+            .data_type = ret_type,
+            .is_pointer = ret_is_pointer,
+            .struct_name = ret_struct_name,
+            .name = ident,
+            .params = try params.toOwnedSlice(),
+            .params_types = try params_types.toOwnedSlice(),
+            .params_is_pointer = try params_is_pointer.toOwnedSlice(),
+            .params_struct_names = try params_struct_names.toOwnedSlice(),
+            .is_variadic = is_variadic,
+            .is_prototype = is_prototype,
+            .body = body,
+        };
         return node;
     }
 };

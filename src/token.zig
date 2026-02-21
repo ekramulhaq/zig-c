@@ -46,6 +46,7 @@ pub const TokenType = enum {
     // Delimiters
     Semicolon,
     Comma,
+    Ellipsis,
     LParen,
     RParen,
     LBrace,

@@ -820,7 +820,7 @@ pub const CodeGen = struct {
         }
         try self.writer.print(".text\n", .{});
         for (nodes) |node| {
-            if (node.type == .Function) {
+            if (node.type == .Function and !node.is_prototype) {
                 try self.genFunction(node);
             }
         }

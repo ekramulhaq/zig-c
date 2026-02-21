@@ -182,7 +182,16 @@ pub const Lexer = struct {
             ',' => return Token{ .type = .Comma, .value = ",", .line = start_line, .col = start_col },
             '[' => return Token{ .type = .LBracket, .value = "[", .line = start_line, .col = start_col },
             ']' => return Token{ .type = .RBracket, .value = "]", .line = start_line, .col = start_col },
-            '.' => return Token{ .type = .Dot, .value = ".", .line = start_line, .col = start_col },
+            '.' => {
+                if (self.peek() == '.') {
+                    _ = self.advance();
+                    if (self.peek() == '.') {
+                        _ = self.advance();
+                        return Token{ .type = .Ellipsis, .value = "...", .line = start_line, .col = start_col };
+                    }
+                }
+                return Token{ .type = .Dot, .value = ".", .line = start_line, .col = start_col };
+            },
             '?' => return Token{ .type = .Question, .value = "?", .line = start_line, .col = start_col },
             ':' => return Token{ .type = .Colon, .value = ":", .line = start_line, .col = start_col },
             '\'' => {
