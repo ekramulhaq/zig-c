@@ -1,0 +1,87 @@
+int min_distance(int *dist, int *sptSet, int V) {
+    int min = 999;
+    int min_index = -1;
+    int v;
+    for (v = 0; v < V; v++) {
+        if (sptSet[v] == 0) {
+            if (dist[v] <= min) {
+                min = dist[v];
+                min_index = v;
+            }
+        }
+    }
+    return min_index;
+}
+
+int dijkstra(int *graph, int src, int V, int dest) {
+    int dist[9]; 
+    int sptSet[9];
+    int i;
+    for (i = 0; i < V; i++) {
+        dist[i] = 999;
+        sptSet[i] = 0;
+    }
+    dist[src] = 0;
+
+    int count;
+    for (count = 0; count < V - 1; count++) {
+        int u = min_distance(&dist[0], &sptSet[0], V);
+        if (u == -1) {
+            break;
+        }
+        sptSet[u] = 1;
+
+        int v;
+        for (v = 0; v < V; v++) {
+            if (sptSet[v] == 0) {
+                int w = graph[u * V + v];
+                if (w != 0) {
+                    if (dist[u] != 999) {
+                        if (dist[u] + w < dist[v]) {
+                            dist[v] = dist[u] + w;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return dist[dest];
+}
+
+int main() {
+    int graph[81];
+    int i;
+    int V = 9;
+    for (i=0; i<81; i++) {
+        graph[i] = 0;
+    }
+    
+    // Graph with 9 vertices representation via adj matrix
+    graph[0*9 + 1] = 4; graph[0*9 + 7] = 8;
+    graph[1*9 + 0] = 4; graph[1*9 + 2] = 8; graph[1*9 + 7] = 11;
+    graph[2*9 + 1] = 8; graph[2*9 + 3] = 7; graph[2*9 + 8] = 2; graph[2*9 + 5] = 4;
+    graph[3*9 + 2] = 7; graph[3*9 + 4] = 9; graph[3*9 + 5] = 14;
+    graph[4*9 + 3] = 9; graph[4*9 + 5] = 10;
+    graph[5*9 + 2] = 4; graph[5*9 + 3] = 14; graph[5*9 + 4] = 10; graph[5*9 + 6] = 2;
+    graph[6*9 + 5] = 2; graph[6*9 + 7] = 1; graph[6*9 + 8] = 6;
+    graph[7*9 + 0] = 8; graph[7*9 + 1] = 11; graph[7*9 + 6] = 1; graph[7*9 + 8] = 7;
+    graph[8*9 + 2] = 2; graph[8*9 + 6] = 6; graph[8*9 + 7] = 7;
+    
+    // Shortest Path from vertex 0 to 4 is 0->1->2->5->4 (4+8+4+10=26)
+    // Wait: 0->1=4. 1->2=8. 2->3=7. 3->4=9 (4+8+7+9 = 28)
+    // Actually 2->5=4, 5->4=10 (4+8+4+10 = 26) Wait let's just compute...
+    
+    int dist = dijkstra(&graph[0], 0, 9, 4);
+    if (dist == 21) {
+        return 42; 
+    }
+    
+    // Let's verify standard answer for vertex 0 to 4 in this graph is 21
+    // Graph distances from 0:
+    // 0:0, 1:4, 2:12, 3:19, 4:21, 5:11, 6:9, 7:8, 8:14
+    
+    if (dist == 21) {
+        return 42;
+    }
+    return dist;
+}

@@ -91,6 +91,8 @@ EXAMPLES=(
     "examples/gauntlet.simple:42"
     "examples/bst.simple:42"
     "examples/array_struct.simple:42"
+    "examples/sudoku.simple:42"
+    "examples/dijkstra.simple:42"
 )
 
 TOTAL_PASS=0
