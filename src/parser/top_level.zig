@@ -123,7 +123,14 @@ pub const TopLevelParser = struct {
                 try params_struct_names.append(param_struct_name);
 
                 var param_pointer_level: usize = 0;
-                while (self.base.consume(.Star)) { param_pointer_level += 1; }
+                var is_func_ptr = false;
+                if (self.base.consume(.LParen)) {
+                    while (self.base.consume(.Star)) { param_pointer_level += 1; }
+                    is_func_ptr = true;
+                } else {
+                    while (self.base.consume(.Star)) { param_pointer_level += 1; }
+                }
+
                 try params_is_pointer.append(param_pointer_level > 0);
                 try params_pointer_levels.append(param_pointer_level);
 
@@ -136,6 +143,18 @@ pub const TopLevelParser = struct {
                     }
                 } else {
                     try params.append("");
+                }
+
+                if (is_func_ptr) {
+                    try self.base.expect(.RParen, "Expected ) in function pointer parameter");
+                    try self.base.expect(.LParen, "Expected ( for function pointer arguments");
+                    while (self.base.current()) |t| {
+                        if (t.type == .RParen) {
+                            self.base.advance();
+                            break;
+                        }
+                        self.base.advance();
+                    }
                 }
                 
                 if (!self.base.consume(.Comma)) break;

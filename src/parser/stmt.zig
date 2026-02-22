@@ -95,12 +95,30 @@ pub const StmtParser = struct {
             var decls = std.ArrayList(*Node).init(self.base.allocator);
                             while (true) {
                                 var pointer_level: usize = 0;
-                                while (self.base.consume(.Star)) { pointer_level += 1; }
+                                var is_func_ptr = false;
+                                if (self.base.consume(.LParen)) {
+                                    while (self.base.consume(.Star)) { pointer_level += 1; }
+                                    is_func_ptr = true;
+                                } else {
+                                    while (self.base.consume(.Star)) { pointer_level += 1; }
+                                }
                                 const is_pointer = (pointer_level > 0);
             
                                 const ident = self.base.current() orelse return self.base.errorAt(token, "Expected identifier");
                                 if (ident.type != .Identifier) return self.base.errorAt(ident, "Expected identifier");
                                 self.base.advance();
+
+                                if (is_func_ptr) {
+                                    try self.base.expect(.RParen, "Expected ) in function pointer declaration");
+                                    try self.base.expect(.LParen, "Expected ( for function pointer definition arguments");
+                                    while (self.base.current()) |t| {
+                                        if (t.type == .RParen) {
+                                            self.base.advance();
+                                            break;
+                                        }
+                                        self.base.advance();
+                                    }
+                                }
                                 
                                 var node: *Node = undefined;
                                 if (self.base.consume(.LBracket)) {

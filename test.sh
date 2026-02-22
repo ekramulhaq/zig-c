@@ -93,6 +93,7 @@ EXAMPLES=(
     "examples/array_struct.simple:42"
     "examples/sudoku.simple:42"
     "examples/dijkstra.simple:42"
+    "examples/func_ptr.simple:42"
 )
 
 TOTAL_PASS=0

@@ -18,6 +18,7 @@ pub const CodeGen = struct {
     label_count: usize,
     vars: std.StringHashMap(LocalVar),
     globals: std.StringHashMap(Global),
+    functions: std.StringHashMap(void),
     type_system: TypeSystem,
     strings: std.ArrayList([]const u8),
     floats: std.ArrayList(f64),
@@ -43,6 +44,7 @@ pub const CodeGen = struct {
             .label_count = 0,
             .vars = std.StringHashMap(LocalVar).init(allocator),
             .globals = std.StringHashMap(Global).init(allocator),
+            .functions = std.StringHashMap(void).init(allocator),
             .type_system = ts,
             .strings = std.ArrayList([]const u8).init(allocator),
             .floats = std.ArrayList(f64).init(allocator),
@@ -305,6 +307,15 @@ pub const CodeGen = struct {
                             }
                         }
                     }
+                } else if (self.functions.contains(node.name.?)) {
+                    node.data_type = .Int; 
+                    node.is_pointer = true;
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
+                        try self.writer.print("    add x0, x8, _{s}@PAGEOFF\n", .{node.name.?});
+                    } else {
+                        try self.writer.print("    leaq _{s}(%rip), %rax\n", .{node.name.?});
+                    }
                 } else @panic("Undefined variable");
             },
             .String => {
@@ -538,17 +549,38 @@ pub const CodeGen = struct {
                         }
                     }
                 }
-                if (self.arch == .arm64) {
-                    try self.writer.print("    bl _{s}\n", .{node.name.?});
-                    if (is_printf) {
-                        const stack_args = if (node.args) |a| if (a.len > 1) a.len - 1 else 0 else 0;
-                        if (stack_args > 0) {
-                            try self.writer.print("    add sp, sp, #{}\n", .{stack_args * 16});
-                        }
+                if (self.vars.get(node.name.?)) |local| {
+                    try self.emitLoad(if (self.arch == .arm64) "x8" else "%rax", local.offset);
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    blr x8\n", .{});
+                    } else {
+                        try self.writer.print("    movb $0, %al\n", .{});
+                        try self.writer.print("    callq *%rax\n", .{});
+                    }
+                } else if (self.globals.get(node.name.?)) |global| {
+                    _ = global;
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
+                        try self.writer.print("    ldr x8, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                        try self.writer.print("    blr x8\n", .{});
+                    } else {
+                        try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                        try self.writer.print("    movb $0, %al\n", .{});
+                        try self.writer.print("    callq *%rax\n", .{});
                     }
                 } else {
-                    try self.writer.print("    movb $0, %al\n", .{});
-                    try self.writer.print("    callq _{s}\n", .{node.name.?});
+                    if (self.arch == .arm64) {
+                        try self.writer.print("    bl _{s}\n", .{node.name.?});
+                        if (is_printf) {
+                            const stack_args = if (node.args) |a| if (a.len > 1) a.len - 1 else 0 else 0;
+                            if (stack_args > 0) {
+                                try self.writer.print("    add sp, sp, #{}\n", .{stack_args * 16});
+                            }
+                        }
+                    } else {
+                        try self.writer.print("    movb $0, %al\n", .{});
+                        try self.writer.print("    callq _{s}\n", .{node.name.?});
+                    }
                 }
             },
             .BinaryOp => {
@@ -1131,6 +1163,9 @@ pub const CodeGen = struct {
     /// Generates code for the entire program.
     pub fn genProgram(self: *CodeGen, nodes: []*Node) !void {
         for (nodes) |node| {
+            if (node.type == .Function) {
+                try self.functions.put(node.name.?, {});
+            }
             try self.registerGlobal(node);
         }
         try self.writer.print(".text\n", .{});

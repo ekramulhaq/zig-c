@@ -1,0 +1,26 @@
+int add(int a, int b) {
+    return a + b;
+}
+
+int sub(int a, int b) {
+    return a - b;
+}
+
+int do_op(int (*op)(int, int), int x, int y) {
+    return op(x, y);
+}
+
+int main() {
+    int (*fp)(int, int) = add;
+    int res1 = fp(10, 5); // 15
+    
+    fp = sub;
+    int res2 = fp(10, 5); // 5
+    
+    int res3 = do_op(add, 20, 2); // 22
+    
+    if (res1 == 15 && res2 == 5 && res3 == 22) {
+        return 42;
+    }
+    return 0;
+}
