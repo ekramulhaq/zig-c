@@ -1,0 +1,23 @@
+struct Point {
+    int x;
+    int y;
+};
+
+struct Rectangle {
+    struct Point top_left;
+    struct Point bottom_right;
+};
+
+int main() {
+    struct Rectangle rect;
+    rect.top_left.x = 10;
+    rect.top_left.y = 20;
+    rect.bottom_right.x = 100;
+    rect.bottom_right.y = 200;
+
+    int area = (rect.bottom_right.x - rect.top_left.x) * (rect.bottom_right.y - rect.top_left.y);
+    if (area == 16200) { // (100-10) * (200-20) = 90 * 180 = 16200
+        return 42;
+    }
+    return area;
+}

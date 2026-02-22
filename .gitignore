@@ -1,0 +1,10 @@
+.zig-cache/
+zig-out/
+.DS_Store
+complex_nested
+compiler
+out.s
+out.asm
+out_bin
+test
+test_script.py

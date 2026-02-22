@@ -99,6 +99,7 @@ pub const TopLevelParser = struct {
         var params = std.ArrayList([]const u8).init(self.base.allocator);
         var params_types = std.ArrayList(ast.DataType).init(self.base.allocator);
         var params_is_pointer = std.ArrayList(bool).init(self.base.allocator);
+        var params_pointer_levels = std.ArrayList(usize).init(self.base.allocator);
         var params_struct_names = std.ArrayList(?[]const u8).init(self.base.allocator);
         var is_variadic = false;
         if (!self.base.consume(.RParen)) {
@@ -124,6 +125,7 @@ pub const TopLevelParser = struct {
                 var param_pointer_level: usize = 0;
                 while (self.base.consume(.Star)) { param_pointer_level += 1; }
                 try params_is_pointer.append(param_pointer_level > 0);
+                try params_pointer_levels.append(param_pointer_level);
 
                 if (self.base.current()) |token| {
                     if (token.type == .Identifier) {
@@ -168,6 +170,7 @@ pub const TopLevelParser = struct {
             .params = try params.toOwnedSlice(),
             .params_types = try params_types.toOwnedSlice(),
             .params_is_pointer = try params_is_pointer.toOwnedSlice(),
+            .params_pointer_levels = try params_pointer_levels.toOwnedSlice(),
             .params_struct_names = try params_struct_names.toOwnedSlice(),
             .is_variadic = is_variadic,
             .is_prototype = is_prototype,

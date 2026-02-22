@@ -1,0 +1,30 @@
+struct Point {
+    int x;
+    int y;
+};
+
+struct Rectangle {
+    struct Point points[2];
+};
+
+struct Scene {
+    struct Rectangle rects[2];
+};
+
+int main() {
+    struct Scene scene;
+    
+    // scene.rects[0].points[0].x
+    scene.rects[0].points[0].x = 5;
+    scene.rects[0].points[0].y = 10;
+    
+    // scene.rects[1].points[1].x
+    scene.rects[1].points[1].x = 50;
+    scene.rects[1].points[1].y = 100;
+
+    int sum = scene.rects[0].points[0].x + scene.rects[1].points[1].y;
+    if (sum == 105) {
+        return 42;
+    }
+    return sum;
+}

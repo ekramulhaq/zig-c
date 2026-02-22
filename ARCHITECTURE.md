@@ -56,6 +56,7 @@ graph LR
 ### Code Generator (`src/codegen.zig`)
 - **Responsibility**: Translates the optimized AST into target-specific assembly code.
 - **Design**: Modular backend that abstracts architecture-specific details behind an `Arch` interface.
+- **Type Resolution**: Implements `resolveTypeInfo` for recursive type discovery (e.g., resolving `rect.top_left.x` to the correct struct member type and offset across multiple nesting levels).
 
 #### **Stack Management**
 - **Frame Layout**: Each function manages its own stack frame (currently fixed at 2048 bytes for simplicity).

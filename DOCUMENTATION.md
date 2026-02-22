@@ -86,7 +86,8 @@ A basic standard library is provided in the `include/` directory:
 ### Memory and Structs
 - Local variables are stack-allocated within the function's scope.
 - Global variables (both initialized and uninitialized) are placed in the data/comm sections.
-- Structs allow for grouped data with fixed-size members (currently all members are 8 bytes).
+- Structs allow for grouped data with fixed-size members.
+- Members can be arrays or other structs (nested structs).
 
 ---
 
@@ -108,9 +109,9 @@ Both backends implement strict 16-byte stack alignment as required by macOS.
 The project includes an automated test suite (`test.sh`) and several example programs in the `examples/` directory.
 
 ### Key Examples:
-- `loop_control.simple`: Demonstrates `do-while`, `break`, and `continue`.
-- `void_char.simple`: Showcases `void` functions and character literals.
-- `typedef_enum.simple`: Illustrates type aliasing and enumeration usage.
+- `gauntlet.simple`: Comprehensive stress-test for recursion, floats, bit ops, and sorting.
+- `bst.simple`: Binary Search Tree implementation testing recursive structs and functions.
+- `array_struct.simple`: Verifies correct indexing for arrays of multi-byte structs.
 - `bubble_sort.simple`: Implements standard bubble sort on an array.
 - `binary_search.simple`: Demonstrates recursion and array indexing.
 
@@ -175,14 +176,14 @@ Example:
 **Current State**:
 - Multi-architecture support (ARM64/x86_64) is stable.
 - The codebase is modular (Backend/Parser split).
-- 70/70 tests are passing.
-- Key features implemented: Structs, Enums, Typedef, Pointers, Arrays, Compound Assignments, Ternary, Switch/Case, Postfix ops, Sizeof, Multiple Declarations.
+- 82/82 tests are passing.
+- Key features implemented: Structs (nested), Enums, Typedef, Pointers, Arrays, Compound Assignments, Ternary, Switch/Case, Postfix ops, Sizeof, Multiple Declarations, Type Casting.
 
 **Immediate Next Steps**:
-1. **Type Casting**: Implement `(type)expression` syntax and backend logic.
-2. **Initializers**: Support `{1, 2, 3}` syntax for arrays and structs.
-3. **Semantic Analysis**: Add a dedicated pass between Parser and CodeGen to handle type checking and symbol resolution more robustly (removing the need for the fallback search in `MemberAccess`).
-4. **Void Pointers/Generic Pointers**: Improve handling of `void*`.
+1. **Initializers**: Support `{1, 2, 3}` syntax for arrays and structs.
+2. **Semantic Analysis**: Add a dedicated pass between Parser and CodeGen to handle type checking and symbol resolution more robustly.
+3. **Void Pointers/Generic Pointers**: Improve handling of `void*`.
+4. **Multi-level Indirection**: Support `int **p` and deeper pointer levels.
 
 **Resume Prompt**:
-> "I am working on a Zig-based C compiler. All 70 tests are passing. The project was recently refactored into a modular structure (src/parser/ and src/backend/). I have implemented structs, enums, switch/case, and sizeof. Please help me implement the next feature: [Type Casting / Array Initializers]."
+> "I am working on a Zig-based C compiler. All 82 tests are passing. The project supports nested structs, multi-architecture backends (ARM64/x86_64), and basic optimizations. I have implemented type casting and recursive data structures. Please help me implement the next feature: [Array Initializers / Multi-level Pointers]."

@@ -93,37 +93,36 @@ pub const StmtParser = struct {
             }
             
             var decls = std.ArrayList(*Node).init(self.base.allocator);
-            while (true) {
-                var pointer_level: usize = 0;
-                while (self.base.consume(.Star)) { pointer_level += 1; }
-                const is_pointer = (pointer_level > 0);
-
-                const ident = self.base.current() orelse return self.base.errorAt(token, "Expected identifier");
-                if (ident.type != .Identifier) return self.base.errorAt(ident, "Expected identifier");
-                self.base.advance();
-                
-                var node: *Node = undefined;
-                if (self.base.consume(.LBracket)) {
-                    const size_node = try self.expr_p.parseExpr();
-                    if (size_node.type != .Number) return self.base.errorAt(ident, "Array size must be a constant number");
-                    try self.base.expect(.RBracket, "Expected ] after array size");
-                    node = try self.base.allocator.create(Node);
-                    node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                } else if (self.base.consume(.Equal)) {
-                    const expr = try self.expr_p.parseExpr();
-                    node = try self.base.allocator.create(Node);
-                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                    if (expr.type == .Number) {
-                        node.init_value = expr.value;
-                        node.finit_value = expr.fvalue;
-                    }
-                } else {
-                    node = try self.base.allocator.create(Node);
-                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type, .is_pointer = is_pointer, .struct_name = struct_name };
-                }
-                try decls.append(node);
-
-                if (!self.base.consume(.Comma)) break;
+                            while (true) {
+                                var pointer_level: usize = 0;
+                                while (self.base.consume(.Star)) { pointer_level += 1; }
+                                const is_pointer = (pointer_level > 0);
+            
+                                const ident = self.base.current() orelse return self.base.errorAt(token, "Expected identifier");
+                                if (ident.type != .Identifier) return self.base.errorAt(ident, "Expected identifier");
+                                self.base.advance();
+                                
+                                var node: *Node = undefined;
+                                if (self.base.consume(.LBracket)) {
+                                    const size_node = try self.expr_p.parseExpr();
+                                    if (size_node.type != .Number) return self.base.errorAt(ident, "Array size must be a constant number");
+                                    try self.base.expect(.RBracket, "Expected ] after array size");
+                                    node = try self.base.allocator.create(Node);
+                                    node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+                                } else if (self.base.consume(.Equal)) {
+                                    const expr = try self.expr_p.parseExpr();
+                                    node = try self.base.allocator.create(Node);
+                                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = expr, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+                                    if (expr.type == .Number) {
+                                        node.init_value = expr.value;
+                                        node.finit_value = expr.fvalue;
+                                    }
+                                } else {
+                                    node = try self.base.allocator.create(Node);
+                                    node.* = Node{ .type = .VarDecl, .name = ident.value, .right = null, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+                                }
+                                try decls.append(node);
+                            if (!self.base.consume(.Comma)) break;
             }
             try self.base.expect(.Semicolon, "Expected ; after declaration(s)");
 

@@ -60,20 +60,41 @@ pub const TypeSystem = struct {
         var offset: i32 = 0;
 
         for (members) |member| {
-            if (member.type == .VarDecl) {
-                const m_size = self.getTypeSize(member.data_type, member.is_pointer, member.struct_name);
-                try layout.members.put(member.name.?, .{
-                    .name = member.name.?,
-                    .offset = offset,
-                    .data_type = member.data_type,
-                    .is_pointer = member.is_pointer,
-                    .struct_name = member.struct_name,
-                });
-                offset += m_size;
-            }
+            offset = try self.addStructMember(&layout, member, offset);
         }
         layout.total_size = offset;
         try self.structs.put(name, layout);
+    }
+
+    fn addStructMember(self: *TypeSystem, layout: *StructLayout, member: *ast.Node, start_offset: i32) !i32 {
+        var offset = start_offset;
+        if (member.type == .Compound) {
+            for (member.body.?) |sub| {
+                offset = try self.addStructMember(layout, sub, offset);
+            }
+        } else if (member.type == .VarDecl) {
+            const m_size = self.getTypeSize(member.data_type, member.is_pointer, member.struct_name);
+            try layout.members.put(member.name.?, .{
+                .name = member.name.?,
+                .offset = offset,
+                .data_type = member.data_type,
+                .is_pointer = member.is_pointer,
+                .struct_name = member.struct_name,
+            });
+            offset += m_size;
+        } else if (member.type == .ArrayDecl) {
+            const m_size = self.getTypeSize(member.data_type, member.is_pointer, member.struct_name);
+            const array_elements = if (member.value) |v| @as(i32, @intCast(v)) else 1;
+            try layout.members.put(member.name.?, .{
+                .name = member.name.?,
+                .offset = offset,
+                .data_type = member.data_type,
+                .is_pointer = member.is_pointer, // Should not be true, because it's inline!
+                .struct_name = member.struct_name,
+            });
+            offset += m_size * array_elements;
+        }
+        return offset;
     }
 
     pub fn getTypeSize(self: *TypeSystem, data_type: ast.DataType, is_pointer: bool, struct_name: ?[]const u8) i32 {

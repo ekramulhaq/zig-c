@@ -235,24 +235,7 @@ pub const Optimizer = struct {
     // Copy the content of `src` into `dst` in-place so pointers held by the
     // caller remain valid.
     fn replaceWith(_: *Optimizer, dst: *Node, src: *Node) void {
-        dst.type       = src.type;
-        dst.data_type  = src.data_type;
-        dst.value      = src.value;
-        dst.fvalue     = src.fvalue;
-        dst.name       = src.name;
-        dst.op         = src.op;
-        dst.left       = src.left;
-        dst.right      = src.right;
-        dst.condition  = src.condition;
-        dst.body       = src.body;
-        dst.else_body  = src.else_body;
-        dst.init       = src.init;
-        dst.update     = src.update;
-        dst.args       = src.args;
-        dst.data       = src.data;
-        dst.init_value = src.init_value;
-        dst.is_pointer = src.is_pointer;
-        dst.struct_name = src.struct_name;
+        dst.* = src.*;
     }
 
     // ─── Strength reduction ──────────────────────────────────────────────────────
