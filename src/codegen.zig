@@ -550,12 +550,12 @@ pub const CodeGen = struct {
                     }
                 }
                 if (self.vars.get(node.name.?)) |local| {
-                    try self.emitLoad(if (self.arch == .arm64) "x8" else "%rax", local.offset);
+                    try self.emitLoad(if (self.arch == .arm64) "x8" else "%r11", local.offset);
                     if (self.arch == .arm64) {
                         try self.writer.print("    blr x8\n", .{});
                     } else {
                         try self.writer.print("    movb $0, %al\n", .{});
-                        try self.writer.print("    callq *%rax\n", .{});
+                        try self.writer.print("    callq *%r11\n", .{});
                     }
                 } else if (self.globals.get(node.name.?)) |global| {
                     _ = global;
@@ -564,9 +564,9 @@ pub const CodeGen = struct {
                         try self.writer.print("    ldr x8, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
                         try self.writer.print("    blr x8\n", .{});
                     } else {
-                        try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                        try self.writer.print("    movq _{s}(%rip), %r11\n", .{node.name.?});
                         try self.writer.print("    movb $0, %al\n", .{});
-                        try self.writer.print("    callq *%rax\n", .{});
+                        try self.writer.print("    callq *%r11\n", .{});
                     }
                 } else {
                     if (self.arch == .arm64) {

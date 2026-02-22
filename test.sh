@@ -94,6 +94,8 @@ EXAMPLES=(
     "examples/sudoku.simple:42"
     "examples/dijkstra.simple:42"
     "examples/func_ptr.simple:42"
+    "examples/n_queens.simple:42"
+    "examples/matrix_mult.simple:42"
 )
 
 TOTAL_PASS=0
