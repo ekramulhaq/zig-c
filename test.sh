@@ -96,6 +96,8 @@ EXAMPLES=(
     "examples/func_ptr.simple:42"
     "examples/n_queens.simple:42"
     "examples/matrix_mult.simple:42"
+    "examples/hanoi.simple:42"
+    "examples/quick_sort.simple:42"
 )
 
 TOTAL_PASS=0

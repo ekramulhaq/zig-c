@@ -1,0 +1,18 @@
+int hanoi(int n, int src, int dst, int aux) {
+    if (n == 1) {
+        return 1;
+    }
+    int moves = 0;
+    moves = moves + hanoi(n - 1, src, aux, dst);
+    moves = moves + 1;
+    moves = moves + hanoi(n - 1, aux, dst, src);
+    return moves;
+}
+
+int main() {
+    int moves = hanoi(6, 1, 3, 2); 
+    if (moves == 63) {
+        return 42;
+    }
+    return moves;
+}
