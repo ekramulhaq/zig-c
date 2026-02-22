@@ -8,3 +8,5 @@ out.asm
 out_bin
 test
 test_script.py
+dijkstra*
+sudoku*
