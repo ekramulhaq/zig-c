@@ -25,7 +25,7 @@ int dijkstra(int *graph, int src, int V, int dest) {
 
     int count;
     for (count = 0; count < V - 1; count++) {
-        int u = min_distance(&dist[0], &sptSet[0], V);
+        int u = min_distance(dist, sptSet, V);
         if (u == -1) {
             break;
         }
@@ -71,7 +71,7 @@ int main() {
     // Wait: 0->1=4. 1->2=8. 2->3=7. 3->4=9 (4+8+7+9 = 28)
     // Actually 2->5=4, 5->4=10 (4+8+4+10 = 26) Wait let's just compute...
     
-    int dist = dijkstra(&graph[0], 0, 9, 4);
+    int dist = dijkstra(graph, 0, 9, 4);
     if (dist == 21) {
         return 42; 
     }

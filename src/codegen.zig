@@ -152,10 +152,10 @@ pub const CodeGen = struct {
         return .{ .dt = .Int, .is_ptr = false, .s_name = null };
     }
 
-    fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType, is_pointer: bool, pointer_level: usize, struct_name: ?[]const u8) !LocalVar {
+    fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType, is_pointer: bool, is_array: bool, pointer_level: usize, struct_name: ?[]const u8) !LocalVar {
         if (self.vars.get(name)) |local| return local;
         self.stack_pos -= size;
-        const local = LocalVar{ .offset = self.stack_pos, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+        const local = LocalVar{ .offset = self.stack_pos, .data_type = data_type, .is_pointer = is_pointer, .is_array = is_array, .pointer_level = pointer_level, .struct_name = struct_name };
         try self.vars.put(name, local);
         return local;
     }
@@ -279,22 +279,30 @@ pub const CodeGen = struct {
                 if (self.vars.get(node.name.?)) |local| {
                     node.data_type = local.data_type;
                     if (node.data_type.isFloat()) self.has_floats = true;
-                    try self.emitLoad(self.getReg(local.data_type, 0), local.offset);
+                    if (local.is_array) {
+                        try self.genAddr(node);
+                    } else {
+                        try self.emitLoad(self.getReg(local.data_type, 0), local.offset);
+                    }
                 } else if (self.globals.get(node.name.?)) |global| {
                     node.data_type = global.data_type;
                     if (node.data_type.isFloat()) self.has_floats = true;
-                    if (self.arch == .arm64) {
-                        try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
-                        if (node.data_type.isFloat()) {
-                            try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
-                        } else {
-                            try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
-                        }
+                    if (global.is_array) {
+                        try self.genAddr(node);
                     } else {
-                        if (node.data_type.isFloat()) {
-                            try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{node.name.?});
+                        if (self.arch == .arm64) {
+                            try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
+                            if (node.data_type.isFloat()) {
+                                try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                            } else {
+                                try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                            }
                         } else {
-                            try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                            if (node.data_type.isFloat()) {
+                                try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{node.name.?});
+                            } else {
+                                try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                            }
                         }
                     }
                 } else @panic("Undefined variable");
@@ -341,7 +349,7 @@ pub const CodeGen = struct {
                             data_type = local.data_type;
                         } else {
                             const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-                            const local = try self.registerVar(name, size, node.data_type, node.is_pointer, node.pointer_level, node.struct_name);
+                            const local = try self.registerVar(name, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
                             offset = local.offset;
                             data_type = local.data_type;
                         }
@@ -906,15 +914,15 @@ pub const CodeGen = struct {
                 const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
                 if (node.right) |right| {
                     try self.genExpr(right);
-                    const local = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, node.pointer_level, node.struct_name);
+                    const local = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
                     try self.emitStore(self.getReg(node.data_type, 0), local.offset);
                 } else {
-                    _ = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, node.pointer_level, node.struct_name);
+                    _ = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
                 }
             },
             .ArrayDecl => {
                 const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-                _ = try self.registerVar(node.name.?, @intCast(node.value.? * element_size), node.data_type, node.is_pointer, node.pointer_level, node.struct_name);
+                _ = try self.registerVar(node.name.?, @intCast(node.value.? * element_size), node.data_type, node.is_pointer, true, node.pointer_level, node.struct_name);
             },
             .Assignment, .FunctionCall, .BinaryOp, .Comparison, .LogicalOp, .UnaryOp, .PostfixOp, .Number, .Identifier, .String, .Index, .MemberAccess, .Deref, .AddressOf, .Ternary => {
                 try self.genExpr(node);
@@ -1087,7 +1095,7 @@ pub const CodeGen = struct {
                 const s_name = if (node.params_struct_names) |psns| psns[idx] else null;
                 const size = self.type_system.getTypeSize(param_type, is_ptr, s_name);
                 const p_level = if (node.params_pointer_levels) |pls| pls[idx] else (if (is_ptr) @as(usize, 1) else 0);
-                const local = try self.registerVar(param, size, param_type, is_ptr, p_level, s_name);
+                const local = try self.registerVar(param, size, param_type, is_ptr, false, p_level, s_name);
                 if (self.arch == .arm64) {
                     try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, local.offset});
                 } else {
@@ -1109,10 +1117,10 @@ pub const CodeGen = struct {
     fn registerGlobal(self: *CodeGen, node: *Node) !void {
         if (node.type == .VarDecl) {
             const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-            try self.globals.put(node.name.?, .{ .size = size, .init_value = node.init_value, .data_type = node.data_type, .is_pointer = node.is_pointer, .pointer_level = node.pointer_level, .struct_name = node.struct_name });
+            try self.globals.put(node.name.?, .{ .size = size, .init_value = node.init_value, .data_type = node.data_type, .is_pointer = node.is_pointer, .is_array = false, .pointer_level = node.pointer_level, .struct_name = node.struct_name });
         } else if (node.type == .ArrayDecl) {
             const element_size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
-            try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * element_size), .init_value = null, .data_type = node.data_type, .is_pointer = node.is_pointer, .pointer_level = node.pointer_level, .struct_name = node.struct_name });
+            try self.globals.put(node.name.?, .{ .size = @intCast(node.value.? * element_size), .init_value = null, .data_type = node.data_type, .is_pointer = node.is_pointer, .is_array = true, .pointer_level = node.pointer_level, .struct_name = node.struct_name });
         } else if (node.type == .Compound) {
             for (node.body.?) |stmt| {
                 try self.registerGlobal(stmt);

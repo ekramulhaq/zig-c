@@ -6,6 +6,7 @@ pub const Global = struct {
     init_value: ?i64,
     data_type: ast.DataType,
     is_pointer: bool,
+    is_array: bool = false,
     pointer_level: usize = 0,
     struct_name: ?[]const u8,
 };
@@ -14,6 +15,7 @@ pub const LocalVar = struct {
     offset: i32,
     data_type: ast.DataType,
     is_pointer: bool,
+    is_array: bool = false,
     pointer_level: usize = 0,
     struct_name: ?[]const u8,
 };

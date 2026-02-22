@@ -50,9 +50,9 @@ int solve_sudoku(int *board) {
     
     int num;
     for(num = 1; num <= 9; num++) {
-        if (is_valid(&board[0], row, col, num) == 1) {
+        if (is_valid(board, row, col, num) == 1) {
             board[row * 9 + col] = num;
-            if (solve_sudoku(&board[0]) == 1) {
+            if (solve_sudoku(board) == 1) {
                 return 1;
             }
             board[row * 9 + col] = 0; // Backtrack
@@ -79,7 +79,7 @@ int main() {
     board[66] = 4; board[67] = 1; board[68] = 9; board[71] = 5;
     board[76] = 8; board[79] = 7; board[80] = 9;
     
-    int solved = solve_sudoku(&board[0]);
+    int solved = solve_sudoku(board);
     
     // After solving, check if specific cells are correct
     if (solved == 1 && board[8] == 2 && board[80] == 9 && board[40] == 5) {
