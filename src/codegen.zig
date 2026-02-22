@@ -121,6 +121,39 @@ pub const CodeGen = struct {
         return node.data_type;
     }
 
+    fn resolveTypeInfo(self: *CodeGen, node: *ast.Node) struct { dt: ast.DataType, is_ptr: bool, s_name: ?[]const u8 } {
+        if (node.type == .Identifier) {
+            if (self.vars.get(node.name.?)) |local| {
+                return .{ .dt = local.data_type, .is_ptr = local.is_pointer, .s_name = local.struct_name };
+            } else if (self.globals.get(node.name.?)) |global| {
+                return .{ .dt = global.data_type, .is_ptr = global.is_pointer, .s_name = global.struct_name };
+            }
+        } else if (node.type == .MemberAccess) {
+            const info = self.resolveTypeInfo(node.left.?);
+            var s_name = info.s_name;
+            if (info.is_ptr) { // e.g., root->next where root is Node*
+                // Already handled by parsePostfix converting -> to Deref
+            }
+            if (node.left.?.type == .Deref) {
+                const inner = node.left.?.right.?;
+                const inner_info = self.resolveTypeInfo(inner);
+                s_name = inner_info.s_name;
+            }
+            if (s_name) |sn| {
+                if (self.type_system.getMember(sn, node.name.?)) |m| {
+                    return .{ .dt = m.data_type, .is_ptr = m.is_pointer, .s_name = m.struct_name };
+                }
+            }
+        } else if (node.type == .Deref) {
+             const info = self.resolveTypeInfo(node.right.?);
+             return .{ .dt = info.dt, .is_ptr = false, .s_name = info.s_name };
+        } else if (node.type == .Index) {
+            const info = self.resolveTypeInfo(node.left.?);
+            return .{ .dt = info.dt, .is_ptr = false, .s_name = info.s_name };
+        }
+        return .{ .dt = .Int, .is_ptr = false, .s_name = null };
+    }
+
     fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType, is_pointer: bool, struct_name: ?[]const u8) !LocalVar {
         if (self.vars.get(name)) |local| return local;
         self.stack_pos -= size;
@@ -165,16 +198,10 @@ pub const CodeGen = struct {
                 try self.genExpr(node.right.?);
             },
             .Index => {
-                var is_ptr = false;
-                if (node.left.?.type == .Identifier) {
-                    if (self.vars.get(node.left.?.name.?)) |local| {
-                        is_ptr = local.is_pointer;
-                    } else if (self.globals.get(node.left.?.name.?)) |global| {
-                        is_ptr = global.is_pointer;
-                    }
-                }
+                const info = self.resolveTypeInfo(node.left.?);
+                const elem_size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
 
-                if (is_ptr) {
+                if (info.is_ptr) {
                     try self.genExpr(node.left.?);
                 } else {
                     try self.genAddr(node.left.?);
@@ -182,11 +209,12 @@ pub const CodeGen = struct {
                 try self.pushTemp(.Int);
                 try self.genExpr(node.right.?);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    lsl x1, x0, #3\n", .{});
+                    try self.writer.print("    mov x1, #{}\n", .{elem_size});
+                    try self.writer.print("    mul x1, x0, x1\n", .{});
                     try self.popTemp("x0");
                     try self.writer.print("    add x0, x0, x1\n", .{});
                 } else {
-                    try self.writer.print("    shlq $3, %rax\n", .{});
+                    try self.writer.print("    imulq ${}, %rax, %rax\n", .{elem_size});
                     try self.writer.print("    movq %rax, %r10\n", .{});
                     try self.popTemp("%rax");
                     try self.writer.print("    addq %r10, %rax\n", .{});

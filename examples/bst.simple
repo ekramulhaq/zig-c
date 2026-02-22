@@ -1,0 +1,63 @@
+struct Node {
+    int val;
+    struct Node *left;
+    struct Node *right;
+};
+
+struct Node pool[10];
+int pool_ptr = 0;
+
+struct Node *alloc_node(int val) {
+    if (pool_ptr >= 10) return 0;
+    struct Node *res = &pool[pool_ptr];
+    pool_ptr = pool_ptr + 1;
+    res->val = val;
+    res->left = 0;
+    res->right = 0;
+    return res;
+}
+
+struct Node *insert(struct Node *root, int val) {
+    if (root == 0) return alloc_node(val);
+    if (val < root->val) {
+        root->left = insert(root->left, val);
+    } else {
+        root->right = insert(root->right, val);
+    }
+    return root;
+}
+
+int search(struct Node *root, int val) {
+    if (root == 0) return 0;
+    if (root->val == val) return 1;
+    if (val < root->val) return search(root->left, val);
+    return search(root->right, val);
+}
+
+int sum_in_order(struct Node *root) {
+    if (root == 0) return 0;
+    return sum_in_order(root->left) + root->val + sum_in_order(root->right);
+}
+
+int main() {
+    struct Node *root = 0;
+    root = insert(root, 10);
+    root = insert(root, 5);
+    root = insert(root, 15);
+    root = insert(root, 3);
+    root = insert(root, 7);
+    root = insert(root, 12);
+    root = insert(root, 18);
+
+    // Sum should be 10+5+15+3+7+12+18 = 70
+    int total = sum_in_order(root);
+    if (total != 70) return 1;
+
+    if (search(root, 7) == 0) return 2;
+    if (search(root, 12) == 0) return 3;
+    if (search(root, 18) == 0) return 4;
+    if (search(root, 10) == 0) return 5;
+    if (search(root, 100) == 1) return 6;
+
+    return 42;
+}

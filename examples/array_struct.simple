@@ -1,0 +1,21 @@
+struct S {
+    int a;
+    int b;
+    int c;
+};
+
+struct S arr[2];
+
+int main() {
+    arr[0].a = 1;
+    arr[0].b = 2;
+    arr[0].c = 3;
+    arr[1].a = 10;
+    arr[1].b = 20;
+    arr[1].c = 30;
+
+    if (arr[1].a == 10 && arr[1].b == 20 && arr[1].c == 30 && arr[0].a == 1) {
+        return 42;
+    }
+    return 0;
+}
