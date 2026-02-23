@@ -29,6 +29,11 @@ pub const TokenType = enum {
     StarEqual,
     SlashEqual,
     PercentEqual,
+    AmpersandEqual,
+    PipeEqual,
+    CaretEqual,
+    LessLessEqual,
+    GreaterGreaterEqual,
     
     // Comparison
     EqualEqual,

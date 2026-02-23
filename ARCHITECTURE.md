@@ -23,9 +23,9 @@ graph LR
 - **Responsibility**: Converts raw source text into a stream of `Token` objects.
 - **Features**: 
     - Supports multi-character tokens (`==`, `>>=`, etc.).
-    - Handles string literals and character literals with escape sequences (`
-`, `	`).
-    - Skips comments (`//`).
+    - Handles string literals and character literals with escape sequences (`\n`, `\t`).
+    - Skips single-line comments (`//`) and block comments (`/* ... */`).
+    - Parses hex (`0xFF`) and octal (`077`) numeric literals.
 
 ### Parser (`src/parser.zig`)
 - **Type**: Recursive Descent Parser.

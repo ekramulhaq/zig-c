@@ -18,7 +18,7 @@ pub const ExprParser = struct {
         const left = try self.parseTernary();
         if (self.base.current()) |token| {
             switch (token.type) {
-                .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => {
+                .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual, .AmpersandEqual, .PipeEqual, .CaretEqual, .LessLessEqual, .GreaterGreaterEqual => {
                     if (left.type != .Identifier and left.type != .Deref and left.type != .Index and left.type != .MemberAccess) {
                         return self.base.errorAt(token, "Invalid lvalue for assignment");
                     }

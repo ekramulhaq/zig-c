@@ -98,6 +98,7 @@ EXAMPLES=(
     "examples/matrix_mult.simple:42"
     "examples/hanoi.simple:42"
     "examples/quick_sort.simple:42"
+    "examples/new_c_features.simple:42"
 )
 
 TOTAL_PASS=0

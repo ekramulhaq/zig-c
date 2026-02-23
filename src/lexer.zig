@@ -55,13 +55,29 @@ pub const Lexer = struct {
                 continue;
             }
             // Skip comments
-            if (self.pos + 1 < self.source.len and self.source[self.pos] == '/' and self.source[self.pos + 1] == '/') {
-                _ = self.advance(); // /
-                _ = self.advance(); // /
-                while (self.pos < self.source.len and self.peek() != '\n') {
-                    _ = self.advance();
+            if (self.pos + 1 < self.source.len and self.source[self.pos] == '/') {
+                if (self.source[self.pos + 1] == '/') {
+                    // Single-line comment
+                    _ = self.advance(); // /
+                    _ = self.advance(); // /
+                    while (self.pos < self.source.len and self.peek() != '\n') {
+                        _ = self.advance();
+                    }
+                    continue;
+                } else if (self.source[self.pos + 1] == '*') {
+                    // Block comment /* ... */
+                    _ = self.advance(); // /
+                    _ = self.advance(); // *
+                    while (self.pos + 1 < self.source.len) {
+                        if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
+                            _ = self.advance(); // *
+                            _ = self.advance(); // /
+                            break;
+                        }
+                        _ = self.advance();
+                    }
+                    continue;
                 }
-                continue;
             }
             break;
         }
@@ -127,6 +143,10 @@ pub const Lexer = struct {
                     _ = self.advance();
                     return Token{ .type = .AmpersandAmpersand, .value = "&&", .line = start_line, .col = start_col };
                 }
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .AmpersandEqual, .value = "&=", .line = start_line, .col = start_col };
+                }
                 return Token{ .type = .Ampersand, .value = "&", .line = start_line, .col = start_col };
             },
             '|' => {
@@ -134,9 +154,19 @@ pub const Lexer = struct {
                     _ = self.advance();
                     return Token{ .type = .PipePipe, .value = "||", .line = start_line, .col = start_col };
                 }
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .PipeEqual, .value = "|=", .line = start_line, .col = start_col };
+                }
                 return Token{ .type = .Pipe, .value = "|", .line = start_line, .col = start_col };
             },
-            '^' => return Token{ .type = .Caret, .value = "^", .line = start_line, .col = start_col },
+            '^' => {
+                if (self.peek() == '=') {
+                    _ = self.advance();
+                    return Token{ .type = .CaretEqual, .value = "^=", .line = start_line, .col = start_col };
+                }
+                return Token{ .type = .Caret, .value = "^", .line = start_line, .col = start_col };
+            },
             '~' => return Token{ .type = .Tilde, .value = "~", .line = start_line, .col = start_col },
             '>' => {
                 if (self.peek() == '=') {
@@ -145,6 +175,10 @@ pub const Lexer = struct {
                 }
                 if (self.peek() == '>') {
                     _ = self.advance();
+                    if (self.peek() == '=') {
+                        _ = self.advance();
+                        return Token{ .type = .GreaterGreaterEqual, .value = ">>=", .line = start_line, .col = start_col };
+                    }
                     return Token{ .type = .GreaterGreater, .value = ">>", .line = start_line, .col = start_col };
                 }
                 return Token{ .type = .Greater, .value = ">", .line = start_line, .col = start_col };
@@ -156,6 +190,10 @@ pub const Lexer = struct {
                 }
                 if (self.peek() == '<') {
                     _ = self.advance();
+                    if (self.peek() == '=') {
+                        _ = self.advance();
+                        return Token{ .type = .LessLessEqual, .value = "<<=", .line = start_line, .col = start_col };
+                    }
                     return Token{ .type = .LessLess, .value = "<<", .line = start_line, .col = start_col };
                 }
                 return Token{ .type = .Less, .value = "<", .line = start_line, .col = start_col };
@@ -220,19 +258,71 @@ pub const Lexer = struct {
                 const duplicated = std.heap.page_allocator.dupe(u8, val_str) catch return error.InvalidCharacter;
                 return Token{ .type = .Number, .value = duplicated, .line = start_line, .col = start_col };
             },
-            '"' => {
-                const start_pos = self.pos;
+            '\"' => {
+                var str_buf = std.ArrayList(u8).init(std.heap.page_allocator);
                 while (self.peek()) |pc| {
-                    if (pc == '"') break;
-                    _ = self.advance();
+                    if (pc == '\"') break;
+                    if (pc == '\\') {
+                        _ = self.advance(); // skip backslash
+                        const esc = self.advance();
+                        switch (esc) {
+                            'n' => str_buf.append('\n') catch return error.InvalidCharacter,
+                            't' => str_buf.append('\t') catch return error.InvalidCharacter,
+                            'r' => str_buf.append('\r') catch return error.InvalidCharacter,
+                            '\\' => str_buf.append('\\') catch return error.InvalidCharacter,
+                            '"' => str_buf.append('"') catch return error.InvalidCharacter,
+                            '0' => str_buf.append(0) catch return error.InvalidCharacter,
+                            'a' => str_buf.append(7) catch return error.InvalidCharacter,
+                            'b' => str_buf.append(8) catch return error.InvalidCharacter,
+                            'f' => str_buf.append(12) catch return error.InvalidCharacter,
+                            else => str_buf.append(esc) catch return error.InvalidCharacter,
+                        }
+                    } else {
+                        str_buf.append(self.advance()) catch return error.InvalidCharacter;
+                    }
                 }
-                const value = self.source[start_pos..self.pos];
                 if (self.peek() == '"') _ = self.advance(); // skip closing quote
+                const value = str_buf.toOwnedSlice() catch return error.InvalidCharacter;
                 return Token{ .type = .StringLiteral, .value = value, .line = start_line, .col = start_col };
             },
             else => {
                 if (std.ascii.isDigit(c)) {
                     const start_pos = self.pos - 1;
+                    // Check for hex (0x/0X) or octal (0) prefix
+                    if (c == '0' and self.peek() != null) {
+                        const next = self.peek().?;
+                        if (next == 'x' or next == 'X') {
+                            // Hex literal: 0xFF
+                            _ = self.advance(); // skip 'x'
+                            while (self.peek()) |pc| {
+                                if (!std.ascii.isHex(pc)) break;
+                                _ = self.advance();
+                            }
+                            const hex_str = self.source[(start_pos + 2)..self.pos]; // skip "0x"
+                            const val = std.fmt.parseInt(i64, hex_str, 16) catch 0;
+                            var buf: [32]u8 = undefined;
+                            const val_str = std.fmt.bufPrint(&buf, "{}", .{val}) catch return error.InvalidCharacter;
+                            const duplicated = std.heap.page_allocator.dupe(u8, val_str) catch return error.InvalidCharacter;
+                            return Token{ .type = .Number, .value = duplicated, .line = start_line, .col = start_col };
+                        } else if (std.ascii.isDigit(next) and next != '8' and next != '9') {
+                            // Octal literal: 077
+                            while (self.peek()) |pc| {
+                                if (!std.ascii.isDigit(pc) or pc == '8' or pc == '9') break;
+                                _ = self.advance();
+                            }
+                            // Check if it's actually a float like 0.5
+                            if (self.peek() == '.') {
+                                // Fall through to float parsing below
+                            } else {
+                                const oct_str = self.source[(start_pos + 1)..self.pos]; // skip leading '0'
+                                const val = std.fmt.parseInt(i64, oct_str, 8) catch 0;
+                                var buf: [32]u8 = undefined;
+                                const val_str = std.fmt.bufPrint(&buf, "{}", .{val}) catch return error.InvalidCharacter;
+                                const duplicated = std.heap.page_allocator.dupe(u8, val_str) catch return error.InvalidCharacter;
+                                return Token{ .type = .Number, .value = duplicated, .line = start_line, .col = start_col };
+                            }
+                        }
+                    }
                     var is_float = false;
                     while (self.peek()) |pc| {
                         if (pc == '.') {

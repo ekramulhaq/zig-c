@@ -33,9 +33,9 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 - **`typedef`**: Create aliases for existing types.
 
 #### Literals
-- **Numeric**: Decimal integers (e.g., `42`).
+- **Numeric**: Decimal integers (e.g., `42`), hexadecimal (e.g., `0xFF`, `0x1A`), and octal (e.g., `077`, `010`).
 - **Character**: Single-quoted characters (e.g., `'A'`). Supports escape sequences: `\n`, `\t`, `\r`, `\\`, `\'`, `\0`.
-- **String**: Double-quoted strings (e.g., `"Hello, world!"`).
+- **String**: Double-quoted strings (e.g., `"Hello, world!"`). Supports escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`, `\0`, `\a`, `\b`, `\f`.
 
 ### Control Flow
 - **`if` / `else`**: Conditional execution.
@@ -55,7 +55,7 @@ The Simple Compiler is a hand-written compiler for a subset of the C language, i
 - **Ternary**: `cond ? then : else`.
 - **Unary**: `sizeof(type)`, `&` (address-of), `*` (dereference).
 - **Type Cast**: `(type)expression` (e.g., `(char)x`, `(void *)ptr`).
-- **Assignment**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=`).
+- **Assignment**: Standard (`=`) and Compound (`+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=`).
 - **Memory**: `->` (arrow access), `.` (dot access).
 
 ### Functions and Declarations
@@ -82,6 +82,7 @@ The compiler prevents multiple inclusions of the same file by tracking absolute 
 A basic standard library is provided in the `include/` directory:
 - **`stdio.h`**: Declarations for `printf`, `puts`, `getchar`, `putchar`, `sprintf`, `snprintf`.
 - **`stdlib.h`**: Declarations for `exit`, `malloc`, `free`, `calloc`, `realloc`, `atoi`, `atol`, `memset`, `memcpy`.
+- **`stddef.h`**: Defines `NULL`.
 
 ### Memory and Structs
 - Local variables are stack-allocated within the function's scope.
@@ -176,14 +177,17 @@ Example:
 **Current State**:
 - Multi-architecture support (ARM64/x86_64) is stable.
 - The codebase is modular (Backend/Parser split).
-- 82/82 tests are passing.
-- Key features implemented: Structs (nested), Enums, Typedef, Pointers, Arrays, Compound Assignments, Ternary, Switch/Case, Postfix ops, Sizeof, Multiple Declarations, Type Casting.
+- 98/98 tests are passing.
+- Key features implemented: Structs (nested), Enums, Typedef, Pointers, Arrays, Compound Assignments (arithmetic & bitwise), Ternary, Switch/Case, Postfix ops, Sizeof, Multiple Declarations, Type Casting, Block Comments, Hex/Octal Literals, String Escape Sequences, NULL macro.
 
 **Immediate Next Steps**:
 1. **Initializers**: Support `{1, 2, 3}` syntax for arrays and structs.
 2. **Semantic Analysis**: Add a dedicated pass between Parser and CodeGen to handle type checking and symbol resolution more robustly.
 3. **Void Pointers/Generic Pointers**: Improve handling of `void*`.
-4. **Multi-level Indirection**: Support `int **p` and deeper pointer levels.
+4. **`unsigned`/`long`/`short` Types**: Add integer type width variants.
+5. **`static`/`const`/`extern` Qualifiers**: Storage class and type qualifiers.
+6. **Function-like Macros**: `#define MAX(a,b) ((a)>(b)?(a):(b))`.
+7. **`union` Type**: Overlapping member storage.
 
 **Resume Prompt**:
-> "I am working on a Zig-based C compiler. All 82 tests are passing. The project supports nested structs, multi-architecture backends (ARM64/x86_64), and basic optimizations. I have implemented type casting and recursive data structures. Please help me implement the next feature: [Array Initializers / Multi-level Pointers]."
+> "I am working on a Zig-based C compiler. All 98 tests are passing. The project supports nested structs, multi-architecture backends (ARM64/x86_64), basic optimizations, block comments, hex/octal literals, bitwise compound assignments, and string escape sequences. Please help me implement the next feature: [Array Initializers / unsigned types / union]."

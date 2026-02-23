@@ -422,6 +422,11 @@ pub const CodeGen = struct {
                                     .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
                                     .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
                                     .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
+                                    .AmpersandEqual => try self.writer.print("    and x0, x0, x1\n", .{}),
+                                    .PipeEqual => try self.writer.print("    orr x0, x0, x1\n", .{}),
+                                    .CaretEqual => try self.writer.print("    eor x0, x0, x1\n", .{}),
+                                    .LessLessEqual => try self.writer.print("    lsl x0, x0, x1\n", .{}),
+                                    .GreaterGreaterEqual => try self.writer.print("    asr x0, x0, x1\n", .{}),
                                     else => unreachable,
                                 }
                             } else {
@@ -433,6 +438,11 @@ pub const CodeGen = struct {
                                     .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
                                     .SlashEqual => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
                                     .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
+                                    .AmpersandEqual => try self.writer.print("    andq %r10, %rax\n", .{}),
+                                    .PipeEqual => try self.writer.print("    orq %r10, %rax\n", .{}),
+                                    .CaretEqual => try self.writer.print("    xorq %r10, %rax\n", .{}),
+                                    .LessLessEqual => { try self.writer.print("    movq %r10, %rcx\n    shlq %cl, %rax\n", .{}); },
+                                    .GreaterGreaterEqual => { try self.writer.print("    movq %r10, %rcx\n    sarq %cl, %rax\n", .{}); },
                                     else => unreachable,
                                 }
                             }
@@ -484,6 +494,11 @@ pub const CodeGen = struct {
                                 .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
                                 .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
                                 .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
+                                .AmpersandEqual => try self.writer.print("    and x0, x0, x1\n", .{}),
+                                .PipeEqual => try self.writer.print("    orr x0, x0, x1\n", .{}),
+                                .CaretEqual => try self.writer.print("    eor x0, x0, x1\n", .{}),
+                                .LessLessEqual => try self.writer.print("    lsl x0, x0, x1\n", .{}),
+                                .GreaterGreaterEqual => try self.writer.print("    asr x0, x0, x1\n", .{}),
                                 else => unreachable,
                             }
                             try self.popTemp("x1"); // Address
@@ -497,6 +512,11 @@ pub const CodeGen = struct {
                                 .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
                                 .SlashEqual => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
                                 .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
+                                .AmpersandEqual => try self.writer.print("    andq %r10, %rax\n", .{}),
+                                .PipeEqual => try self.writer.print("    orq %r10, %rax\n", .{}),
+                                .CaretEqual => try self.writer.print("    xorq %r10, %rax\n", .{}),
+                                .LessLessEqual => { try self.writer.print("    movq %r10, %rcx\n    shlq %cl, %rax\n", .{}); },
+                                .GreaterGreaterEqual => { try self.writer.print("    movq %r10, %rcx\n    sarq %cl, %rax\n", .{}); },
                                 else => unreachable,
                             }
                             try self.popTemp("%r10"); // Address
