@@ -35,7 +35,7 @@ pub const CodeGen = struct {
     arm64_backend: arm64.Arm64Backend,
     x86_64_backend: x86_64.X86_64Backend,
 
-    pub const TypeInfo = struct { dt: ast.DataType, is_ptr: bool, s_name: ?[]const u8 };
+    pub const TypeInfo = struct { dt: ast.DataType, is_ptr: bool, is_array: bool, s_name: ?[]const u8 };
 
     /// Initializes a new CodeGen with the given writer, allocator, and target architecture.
     pub fn init(writer: std.fs.File.Writer, allocator: std.mem.Allocator, arch: Arch, ts: TypeSystem) CodeGen {
@@ -134,25 +134,25 @@ pub const CodeGen = struct {
     fn resolveTypeInfoInternal(self: *CodeGen, node: *ast.Node) TypeInfo {
         if (node.type == .Identifier) {
             if (self.vars.get(node.name.?)) |local| {
-                return .{ .dt = local.data_type, .is_ptr = local.is_pointer, .s_name = local.struct_name };
+                return .{ .dt = local.data_type, .is_ptr = local.is_pointer, .is_array = local.is_array, .s_name = local.struct_name };
             } else if (self.globals.get(node.name.?)) |global| {
-                return .{ .dt = global.data_type, .is_ptr = global.is_pointer, .s_name = global.struct_name };
+                return .{ .dt = global.data_type, .is_ptr = global.is_pointer, .is_array = global.is_array, .s_name = global.struct_name };
             }
         } else if (node.type == .MemberAccess) {
             const info = self.resolveTypeInfoInternal(node.left.?);
             if (info.s_name) |sn| {
                 if (self.type_system.getMember(sn, node.name.?)) |m| {
-                    return .{ .dt = m.data_type, .is_ptr = m.is_pointer, .s_name = m.struct_name };
+                    return .{ .dt = m.data_type, .is_ptr = m.is_pointer, .is_array = m.is_array, .s_name = m.struct_name };
                 }
             }
         } else if (node.type == .Deref) {
              const info = self.resolveTypeInfoInternal(node.right.?);
-             return .{ .dt = info.dt, .is_ptr = false, .s_name = info.s_name };
+             return .{ .dt = info.dt, .is_ptr = false, .is_array = false, .s_name = info.s_name };
         } else if (node.type == .Index) {
             const info = self.resolveTypeInfoInternal(node.left.?);
-            return .{ .dt = info.dt, .is_ptr = false, .s_name = info.s_name };
+            return .{ .dt = info.dt, .is_ptr = false, .is_array = false, .s_name = info.s_name };
         }
-        return .{ .dt = .Int, .is_ptr = false, .s_name = null };
+        return .{ .dt = .Int, .is_ptr = false, .is_array = false, .s_name = null };
     }
 
     fn registerVar(self: *CodeGen, name: []const u8, size: i32, data_type: ast.DataType, is_pointer: bool, is_array: bool, pointer_level: usize, struct_name: ?[]const u8) !LocalVar {
@@ -369,6 +369,13 @@ pub const CodeGen = struct {
             },
             .Deref, .Index, .MemberAccess => {
                 const info = self.resolveTypeInfo(node);
+                // C array decay: an inline array member used in expression context
+                // decays to a pointer (its address). Do NOT load through the pointer.
+                if (info.is_array and !info.is_ptr) {
+                    // Produce the address of the first element (pointer decay)
+                    try self.genAddr(node);
+                    return;
+                }
                 const size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
                 try self.genAddr(node);
                 if (self.arch == .arm64) {

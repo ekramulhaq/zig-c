@@ -1,0 +1,91 @@
+/*
+  test_compiler_bugs.simple
+  Regression tests for 3 compiler bugs found during SimpleDB development:
+    1. Macro expansion inside block comments (apostrophes in comments)
+    2. Struct member char array decay to char* when passed as function arg
+    3. 2D array declarations: char arr[N][M]
+*/
+
+/* Bug 1 test: apostrophes and brackets in comments should NOT confuse the parser.
+   Here is a struct member's array: s.name[i]
+   Here is a word with apostrophe: don't, can't, it's
+   The macro MAX below should NOT be expanded inside this comment. */
+#define MAX 10
+
+/* Bug 3: 2D array declaration */
+char g_grid[4][8];   /* 4 rows, 8 cols -> flat 32 chars */
+
+/* Bug 2: struct with inline char array member */
+struct Record {
+    int id;
+    char name[16];
+    int score;
+};
+
+/* Helper: compute string length */
+int my_strlen(char *s) {
+    int n = 0;
+    while (s[n] != 0) {
+        n = n + 1;
+    }
+    return n;
+}
+
+/* Helper: copy string */
+void my_strcpy(char *dst, char *src) {
+    int i = 0;
+    while (src[i] != 0) {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+    dst[i] = 0;
+}
+
+/* Test 2: pass struct.name (inline char array) as char* to a function */
+int test_struct_array_arg() {
+    struct Record r;
+    r.id    = 42;
+    r.score = 100;
+    /* Copy a string into r.name using the member as a char* */
+    my_strcpy(r.name, "hello");
+    /* Use r.name as char* to get its length */
+    int len = my_strlen(r.name);
+    /* Verify: "hello" has length 5 */
+    if (len != 5) return 1;
+    /* Verify first character */
+    if (r.name[0] != 104) return 2;  /* 'h' = 104 */
+    return 0;
+}
+
+/* Test 3: 2D array write and read */
+int test_2d_array() {
+    /* g_grid[row][col] -> g_grid[row*8 + col] */
+    g_grid[0] = 65;    /* 'A' at flat index 0 */
+    g_grid[7] = 66;    /* 'B' at flat index 7 (last col of row 0) */
+    g_grid[8] = 67;    /* 'C' at flat index 8 (first col of row 1) */
+    if (g_grid[0] != 65) return 10;
+    if (g_grid[7] != 66) return 11;
+    if (g_grid[8] != 67) return 12;
+    return 0;
+}
+
+/* Test 1: Bug 1 is detected at compile time -- if this file compiles without
+   error, the preprocessor correctly skipped comments. No runtime test needed. */
+int test_comment_apostrophe() {
+    /* This comment has it's apostrophes and arr[i*MAX] brackets -- should compile fine */
+    int x = MAX;   /* MAX=10, must expand in code but NOT re-expand in comments */
+    return x - 10; /* should be 0 */
+}
+
+int main() {
+    int r1 = test_comment_apostrophe();
+    if (r1 != 0) return r1;       /* fail: Bug 1 regression or MAX wrong */
+
+    int r2 = test_struct_array_arg();
+    if (r2 != 0) return r2;       /* fail: Bug 2 struct member array decay */
+
+    int r3 = test_2d_array();
+    if (r3 != 0) return r3;       /* fail: Bug 3 2D array */
+
+    return 42;  /* all pass */
+}

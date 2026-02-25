@@ -7,6 +7,8 @@ pub const StructMember = struct {
     offset: i32,
     data_type: ast.DataType,
     is_pointer: bool,
+    is_array: bool,    // true when declared as  type name[N]  inside a struct
+    array_len: i32,    // element count (0 if not an array)
     struct_name: ?[]const u8,
 };
 
@@ -91,6 +93,8 @@ pub const TypeSystem = struct {
                 .offset = offset,
                 .data_type = member.data_type,
                 .is_pointer = member.is_pointer,
+                .is_array = false,
+                .array_len = 0,
                 .struct_name = member.struct_name,
             });
             offset += m_size;
@@ -108,7 +112,9 @@ pub const TypeSystem = struct {
                 .name = member.name.?,
                 .offset = offset,
                 .data_type = member.data_type,
-                .is_pointer = member.is_pointer, // Should not be true, because it's inline!
+                .is_pointer = member.is_pointer,
+                .is_array = true,
+                .array_len = array_elements,
                 .struct_name = member.struct_name,
             });
             offset += m_size * array_elements;

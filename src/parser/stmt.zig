@@ -125,8 +125,20 @@ pub const StmtParser = struct {
                                     const size_node = try self.expr_p.parseExpr();
                                     if (size_node.type != .Number) return self.base.errorAt(ident, "Array size must be a constant number");
                                     try self.base.expect(.RBracket, "Expected ] after array size");
+                                    var total_size = size_node.value.?;
+                                    // 2D array: char arr[N][M]  -->  treated as char arr[N*M]
+                                    if (self.base.consume(.LBracket)) {
+                                        const size2_node = try self.expr_p.parseExpr();
+                                        if (size2_node.type != .Number) return self.base.errorAt(ident, "Array size must be a constant number");
+                                        try self.base.expect(.RBracket, "Expected ] after 2D array size");
+                                        total_size = total_size * size2_node.value.?;
+                                    }
+                                    // Build a Number node with the final size
+                                    const flat_size_node = try self.base.allocator.create(Node);
+                                    flat_size_node.* = Node{ .type = .Number, .value = total_size };
                                     node = try self.base.allocator.create(Node);
-                                    node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = size_node.value, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+                                    node.* = Node{ .type = .ArrayDecl, .name = ident.value, .value = flat_size_node.value, .data_type = data_type, .is_pointer = is_pointer, .pointer_level = pointer_level, .struct_name = struct_name };
+
                                 } else if (self.base.consume(.Equal)) {
                                     const expr = try self.expr_p.parseExpr();
                                     node = try self.base.allocator.create(Node);

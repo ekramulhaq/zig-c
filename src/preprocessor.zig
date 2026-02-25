@@ -175,18 +175,69 @@ pub const Preprocessor = struct {
         const len = line.len;
 
         while (i < len) {
-            const c = line[i];
-            if (isIdentifierStart(c)) {
+            // Skip block comments: /* ... */ (may span the remaining line)
+            if (i + 1 < len and line[i] == '/' and line[i + 1] == '*') {
+                try result.appendSlice(line[i..]);
+                break; // rest of line is inside or starts a block comment – copy verbatim
+            }
+            // Skip single-line comments: // ...
+            if (i + 1 < len and line[i] == '/' and line[i + 1] == '/') {
+                try result.appendSlice(line[i..]);
+                break;
+            }
+            // Skip string literals: "..."
+            if (line[i] == '"') {
+                try result.append('"');
+                i += 1;
+                while (i < len) {
+                    if (line[i] == '\\' and i + 1 < len) {
+                        try result.append(line[i]);
+                        try result.append(line[i + 1]);
+                        i += 2;
+                    } else if (line[i] == '"') {
+                        try result.append('"');
+                        i += 1;
+                        break;
+                    } else {
+                        try result.append(line[i]);
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            // Skip character literals: '.' or '\x'
+            if (line[i] == '\'') {
+                try result.append('\'');
+                i += 1;
+                // consume up to closing ' (handle escape)
+                while (i < len) {
+                    if (line[i] == '\\' and i + 1 < len) {
+                        try result.append(line[i]);
+                        try result.append(line[i + 1]);
+                        i += 2;
+                    } else if (line[i] == '\'') {
+                        try result.append('\'');
+                        i += 1;
+                        break;
+                    } else {
+                        try result.append(line[i]);
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            // Expand identifiers that are defined macros
+            if (isIdentifierStart(line[i])) {
                 const start = i;
                 while (i < len and isIdentifierChar(line[i])) : (i += 1) {}
                 const word = line[start..i];
                 if (self.macros.get(word)) |replacement| {
-                     try result.appendSlice(replacement);
+                    try result.appendSlice(replacement);
                 } else {
                     try result.appendSlice(word);
                 }
             } else {
-                try result.append(c);
+                try result.append(line[i]);
                 i += 1;
             }
         }
