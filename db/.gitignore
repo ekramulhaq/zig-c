@@ -1,0 +1,9 @@
+# Compiled binary
+simpledb
+
+# Assembly output
+simpledb.s
+*.s
+
+# Database file
+simpledb.dat

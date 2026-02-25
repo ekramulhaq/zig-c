@@ -4,11 +4,11 @@ struct Node {
 };
 
 int main() {
-    int s1 = sizeof(int);  // 8
-    int s2 = sizeof(char); // 8 (padded in this compiler)
-    int s3 = sizeof(struct Node); // 16
+    int s1 = sizeof(int);  // 4
+    int s2 = sizeof(char); // 1
+    int s3 = sizeof(struct Node); // 8
     
-    if (s1 == 8 && s2 == 8 && s3 == 16) {
+    if (s1 == 4 && s2 == 1 && s3 == 8) {
         return 42;
     }
     return s3;

@@ -61,30 +61,31 @@ pub const CodeGen = struct {
         };
     }
 
-    fn emitLoad(self: *CodeGen, reg: []const u8, offset: i32) !void {
+    fn emitLoad(self: *CodeGen, reg: []const u8, offset: i32, size: i32, is_float: bool) !void {
         if (self.arch == .arm64) {
-            try self.arm64_backend.emitLoad(reg, offset);
+            try self.arm64_backend.emitLoad(reg, offset, size, is_float);
         } else {
-            try self.x86_64_backend.emitLoad(reg, offset);
+            try self.x86_64_backend.emitLoad(reg, offset, size, is_float);
         }
     }
 
-    fn emitStore(self: *CodeGen, reg: []const u8, offset: i32) !void {
+    fn emitStore(self: *CodeGen, reg: []const u8, offset: i32, size: i32, is_float: bool) !void {
         if (self.arch == .arm64) {
-            try self.arm64_backend.emitStore(reg, offset);
+            try self.arm64_backend.emitStore(reg, offset, size, is_float);
         } else {
-            try self.x86_64_backend.emitStore(reg, offset);
+            try self.x86_64_backend.emitStore(reg, offset, size, is_float);
         }
     }
 
     fn pushTemp(self: *CodeGen, data_type: ast.DataType) !void {
-        try self.emitStore(self.getReg(data_type, 0), self.temp_stack_pos);
+        try self.emitStore(self.getReg(data_type, 0), self.temp_stack_pos, 8, data_type.isFloat());
         self.temp_stack_pos -= 8;
     }
 
     fn popTemp(self: *CodeGen, reg: []const u8) !void {
         self.temp_stack_pos += 8;
-        try self.emitLoad(reg, self.temp_stack_pos);
+        const is_float = if (self.arch == .arm64) reg[0] == 'd' or reg[0] == 's' else std.mem.startsWith(u8, reg, "%xmm");
+        try self.emitLoad(reg, self.temp_stack_pos, 8, is_float);
     }
 
     fn getReg(self: *CodeGen, data_type: ast.DataType, idx: usize) []const u8 {
@@ -199,7 +200,9 @@ pub const CodeGen = struct {
             },
             .Index => {
                 const info = self.resolveTypeInfo(node.left.?);
-                const elem_size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
+                // For pointer-based arrays (int *arr), we want the element size, not the pointer size.
+                // Pass is_pointer=false so we get sizeof(element) not sizeof(pointer).
+                const elem_size = self.type_system.getTypeSize(info.dt, false, info.s_name);
 
                 if (info.is_ptr) {
                     try self.genExpr(node.left.?);
@@ -238,7 +241,11 @@ pub const CodeGen = struct {
                     if (self.type_system.structs.get(sn)) |layout| {
                         if (layout.members.get(node.name.?)) |m| {
                             const off = m.offset;
-                            try self.genAddr(node.left.?);
+                            if (info.is_ptr) {
+                                try self.genExpr(node.left.?);
+                            } else {
+                                try self.genAddr(node.left.?);
+                            }
                             if (self.arch == .arm64) {
                                 try self.writer.print("    add x0, x0, #{}\n", .{off});
                             } else {
@@ -284,7 +291,8 @@ pub const CodeGen = struct {
                     if (local.is_array) {
                         try self.genAddr(node);
                     } else {
-                        try self.emitLoad(self.getReg(local.data_type, 0), local.offset);
+                        const size = self.type_system.getTypeSize(local.data_type, local.is_pointer, local.struct_name);
+                        try self.emitLoad(self.getReg(local.data_type, 0), local.offset, size, local.data_type.isFloat() and !local.is_pointer);
                     }
                 } else if (self.globals.get(node.name.?)) |global| {
                     node.data_type = global.data_type;
@@ -292,18 +300,38 @@ pub const CodeGen = struct {
                     if (global.is_array) {
                         try self.genAddr(node);
                     } else {
+                        const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
                         if (self.arch == .arm64) {
                             try self.writer.print("    adrp x8, _{s}@PAGE\n", .{node.name.?});
                             if (node.data_type.isFloat()) {
-                                try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                                if (size == 4) {
+                                    try self.writer.print("    ldr s0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                                    try self.writer.print("    fcvt d0, s0\n", .{});
+                                } else {
+                                    try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                                }
                             } else {
-                                try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?});
+                                switch (size) {
+                                    1 => try self.writer.print("    ldrsb x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?}),
+                                    4 => try self.writer.print("    ldrsw x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?}),
+                                    else => try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{node.name.?}),
+                                }
                             }
                         } else {
                             if (node.data_type.isFloat()) {
-                                try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{node.name.?});
+                                if (size == 4) {
+                                    try self.writer.print("    movss _{s}(%rip), %xmm0\n", .{node.name.?});
+                                    try self.writer.print("    cvtss2sd %xmm0, %xmm0\n", .{});
+                                } else {
+                                    try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{node.name.?});
+                                }
                             } else {
-                                try self.writer.print("    movq _{s}(%rip), %rax\n", .{node.name.?});
+                                const op = switch (size) {
+                                    1 => "movsbq",
+                                    4 => "movslq",
+                                    else => "movq",
+                                };
+                                try self.writer.print("    {s} _{s}(%rip), %rax\n", .{op, node.name.?});
                             }
                         }
                     }
@@ -340,11 +368,39 @@ pub const CodeGen = struct {
                 try self.genAddr(node.right.?);
             },
             .Deref, .Index, .MemberAccess => {
+                const info = self.resolveTypeInfo(node);
+                const size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
                 try self.genAddr(node);
                 if (self.arch == .arm64) {
-                    try self.writer.print("    ldr x0, [x0]\n", .{});
+                    if (info.dt.isFloat() and !info.is_ptr) {
+                        if (size == 4) {
+                            try self.writer.print("    ldr s0, [x0]\n", .{});
+                            try self.writer.print("    fcvt d0, s0\n", .{});
+                        } else {
+                            try self.writer.print("    ldr d0, [x0]\n", .{});
+                        }
+                    } else {
+                        switch (size) {
+                            1 => try self.writer.print("    ldrsb x0, [x0]\n", .{}),
+                            4 => try self.writer.print("    ldrsw x0, [x0]\n", .{}),
+                            else => try self.writer.print("    ldr x0, [x0]\n", .{}),
+                        }
+                    }
                 } else {
-                    try self.writer.print("    movq (%rax), %rax\n", .{});
+                    if (info.dt.isFloat() and !info.is_ptr) {
+                        if (size == 4) {
+                            try self.writer.print("    movss (%rax), %xmm0\n", .{});
+                            try self.writer.print("    cvtss2sd %xmm0, %xmm0\n", .{});
+                        } else {
+                            try self.writer.print("    movsd (%rax), %xmm0\n", .{});
+                        }
+                    } else {
+                        switch (size) {
+                            1 => try self.writer.print("    movsbq (%rax), %rax\n", .{}),
+                            4 => try self.writer.print("    movslq (%rax), %rax\n", .{}),
+                            else => try self.writer.print("    movq (%rax), %rax\n", .{}),
+                        }
+                    }
                 }
             },
             .Assignment => {
@@ -352,17 +408,27 @@ pub const CodeGen = struct {
                     const is_global = self.globals.contains(name);
                     var offset: i32 = 0;
                     var data_type: ast.DataType = .Int;
+                    var is_ptr: bool = false;
+                    var s_name: ?[]const u8 = null;
+
                     if (is_global) {
-                        data_type = self.globals.get(name).?.data_type;
+                        const global = self.globals.get(name).?;
+                        data_type = global.data_type;
+                        is_ptr = global.is_pointer;
+                        s_name = global.struct_name;
                     } else {
                         if (self.vars.get(name)) |local| {
                             offset = local.offset;
                             data_type = local.data_type;
+                            is_ptr = local.is_pointer;
+                            s_name = local.struct_name;
                         } else {
                             const size = self.type_system.getTypeSize(node.data_type, node.is_pointer, node.struct_name);
                             const local = try self.registerVar(name, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
                             offset = local.offset;
                             data_type = local.data_type;
+                            is_ptr = local.is_pointer;
+                            s_name = local.struct_name;
                         }
                     }
                     node.data_type = data_type;
@@ -371,26 +437,47 @@ pub const CodeGen = struct {
                     if (node.op != .Equal) {
                         // Compound assignment: load current value first
                         if (is_global) {
+                            const size = self.type_system.getTypeSize(data_type, is_ptr, s_name);
                             if (self.arch == .arm64) {
                                 try self.writer.print("    adrp x8, _{s}@PAGE\n", .{name});
                                 if (data_type.isFloat()) {
-                                    try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                    if (size == 4) {
+                                        try self.writer.print("    ldr s0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                        try self.writer.print("    fcvt d0, s0\n", .{});
+                                    } else {
+                                        try self.writer.print("    ldr d0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                    }
                                 } else {
-                                    try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                    switch (size) {
+                                        1 => try self.writer.print("    ldrsb x0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                        4 => try self.writer.print("    ldrsw x0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                        else => try self.writer.print("    ldr x0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                    }
                                 }
                             } else {
                                 if (data_type.isFloat()) {
-                                    try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{name});
+                                    if (size == 4) {
+                                        try self.writer.print("    movss _{s}(%rip), %xmm0\n", .{name});
+                                        try self.writer.print("    cvtss2sd %xmm0, %xmm0\n", .{});
+                                    } else {
+                                        try self.writer.print("    movsd _{s}(%rip), %xmm0\n", .{name});
+                                    }
                                 } else {
-                                    try self.writer.print("    movq _{s}(%rip), %rax\n", .{name});
+                                    const op = switch (size) {
+                                        1 => "movsbq",
+                                        4 => "movslq",
+                                        else => "movq",
+                                    };
+                                    try self.writer.print("    {s} _{s}(%rip), %rax\n", .{op, name});
                                 }
                             }
                         } else {
-                            try self.emitLoad(self.getReg(data_type, 0), offset);
+                            const size = self.type_system.getTypeSize(data_type, is_ptr, s_name);
+                            try self.emitLoad(self.getReg(data_type, 0), offset, size, data_type.isFloat() and !is_ptr);
                         }
                         try self.pushTemp(data_type);
                         try self.genExpr(node.right.?);
-                        if (data_type.isFloat()) {
+                        if (data_type.isFloat() and !is_ptr) {
                             if (self.arch == .arm64) {
                                 try self.writer.print("    fmov d1, d0\n", .{});
                                 try self.popTemp("d0");
@@ -452,22 +539,43 @@ pub const CodeGen = struct {
                     }
 
                     if (is_global) {
+                        const size = self.type_system.getTypeSize(data_type, is_ptr, s_name);
                         if (self.arch == .arm64) {
                             try self.writer.print("    adrp x8, _{s}@PAGE\n", .{name});
                             if (data_type.isFloat()) {
-                                try self.writer.print("    str d0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                if (size == 4) {
+                                    try self.writer.print("    fcvt s0, d0\n", .{});
+                                    try self.writer.print("    str s0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                } else {
+                                    try self.writer.print("    str d0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                }
                             } else {
-                                try self.writer.print("    str x0, [x8, _{s}@PAGEOFF]\n", .{name});
+                                switch (size) {
+                                    1 => try self.writer.print("    strb w0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                    4 => try self.writer.print("    str w0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                    else => try self.writer.print("    str x0, [x8, _{s}@PAGEOFF]\n", .{name}),
+                                }
                             }
                         } else {
                             if (data_type.isFloat()) {
-                                try self.writer.print("    movsd %xmm0, _{s}(%rip)\n", .{name});
+                                if (size == 4) {
+                                    try self.writer.print("    cvtsd2ss %xmm0, %xmm0\n", .{});
+                                    try self.writer.print("    movss %xmm0, _{s}(%rip)\n", .{name});
+                                } else {
+                                    try self.writer.print("    movsd %xmm0, _{s}(%rip)\n", .{name});
+                                }
                             } else {
-                                try self.writer.print("    movq %rax, _{s}(%rip)\n", .{name});
+                                const op = switch (size) {
+                                    1 => "movb %al",
+                                    4 => "movl %eax",
+                                    else => "movq %rax",
+                                };
+                                try self.writer.print("    {s}, _{s}(%rip)\n", .{op, name});
                             }
                         }
                     } else {
-                        try self.emitStore(self.getReg(data_type, 0), offset);
+                        const size = self.type_system.getTypeSize(data_type, is_ptr, s_name);
+                        try self.emitStore(self.getReg(data_type, 0), offset, size, data_type.isFloat() and !is_ptr);
                     }
                 } else if (node.left) |addr_node| {
                     try self.genAddr(addr_node);
@@ -475,69 +583,146 @@ pub const CodeGen = struct {
 
                     if (node.op != .Equal) {
                         // Compound assignment: load current value from address
+                        const info = self.resolveTypeInfo(node.left.?);
+                        const size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
+
                         if (self.arch == .arm64) {
-                            try self.emitLoad("x0", self.temp_stack_pos + 8);
-                            try self.writer.print("    ldr x0, [x0]\n", .{});
+                            try self.emitLoad("x1", self.temp_stack_pos + 8, 8, false);
+                            if (info.dt.isFloat() and !info.is_ptr) {
+                                if (size == 4) {
+                                    try self.writer.print("    ldr s0, [x1]\n", .{});
+                                    try self.writer.print("    fcvt d0, s0\n", .{});
+                                }
+                                else { try self.writer.print("    ldr d0, [x1]\n", .{}); }
+                            } else {
+                                switch (size) {
+                                    1 => try self.writer.print("    ldrsb x0, [x1]\n", .{}),
+                                    4 => try self.writer.print("    ldrsw x0, [x1]\n", .{}),
+                                    else => try self.writer.print("    ldr x0, [x1]\n", .{}),
+                                }
+                            }
                         } else {
-                            try self.emitLoad("%rax", self.temp_stack_pos + 8);
-                            try self.writer.print("    movq (%rax), %rax\n", .{});
+                            try self.emitLoad("%r10", self.temp_stack_pos + 8, 8, false);
+                            if (info.dt.isFloat() and !info.is_ptr) {
+                                if (size == 4) {
+                                    try self.writer.print("    movss (%r10), %xmm0\n", .{});
+                                    try self.writer.print("    cvtss2sd %xmm0, %xmm0\n", .{});
+                                }
+                                else { try self.writer.print("    movsd (%r10), %xmm0\n", .{}); }
+                            } else {
+                                switch (size) {
+                                    1 => try self.writer.print("    movsbq (%r10), %rax\n", .{}),
+                                    4 => try self.writer.print("    movslq (%r10), %rax\n", .{}),
+                                    else => try self.writer.print("    movq (%r10), %rax\n", .{}),
+                                }
+                            }
                         }
-                        try self.pushTemp(.Int); // Save old value
+                        try self.pushTemp(info.dt); // Save old value
 
                         try self.genExpr(node.right.?);
-                        if (self.arch == .arm64) {
-                            try self.writer.print("    mov x1, x0\n", .{});
-                            try self.popTemp("x0"); // Old value
-                            switch (node.op.?) {
-                                .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
-                                .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
-                                .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
-                                .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
-                                .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
-                                .AmpersandEqual => try self.writer.print("    and x0, x0, x1\n", .{}),
-                                .PipeEqual => try self.writer.print("    orr x0, x0, x1\n", .{}),
-                                .CaretEqual => try self.writer.print("    eor x0, x0, x1\n", .{}),
-                                .LessLessEqual => try self.writer.print("    lsl x0, x0, x1\n", .{}),
-                                .GreaterGreaterEqual => try self.writer.print("    asr x0, x0, x1\n", .{}),
-                                else => unreachable,
+                        if (info.dt.isFloat() and !info.is_ptr) {
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    fmov d1, d0\n", .{});
+                                try self.popTemp("d0");
+                                switch (node.op.?) {
+                                    .PlusEqual => try self.writer.print("    fadd d0, d0, d1\n", .{}),
+                                    .MinusEqual => try self.writer.print("    fsub d0, d0, d1\n", .{}),
+                                    .StarEqual => try self.writer.print("    fmul d0, d0, d1\n", .{}),
+                                    .SlashEqual => try self.writer.print("    fdiv d0, d0, d1\n", .{}),
+                                    else => unreachable,
+                                }
+                            } else {
+                                try self.writer.print("    movsd %xmm0, %xmm1\n", .{});
+                                try self.popTemp("%xmm0");
+                                switch (node.op.?) {
+                                    .PlusEqual => try self.writer.print("    addsd %xmm1, %xmm0\n", .{}),
+                                    .MinusEqual => try self.writer.print("    subsd %xmm1, %xmm0\n", .{}),
+                                    .StarEqual => try self.writer.print("    mulsd %xmm1, %xmm0\n", .{}),
+                                    .SlashEqual => try self.writer.print("    divsd %xmm1, %xmm0\n", .{}),
+                                    else => unreachable,
+                                }
                             }
-                            try self.popTemp("x1"); // Address
-                            try self.writer.print("    str x0, [x1]\n", .{});
                         } else {
-                            try self.writer.print("    movq %rax, %r10\n", .{});
-                            try self.popTemp("%rax"); // Old value
-                            switch (node.op.?) {
-                                .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
-                                .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
-                                .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
-                                .SlashEqual => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
-                                .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
-                                .AmpersandEqual => try self.writer.print("    andq %r10, %rax\n", .{}),
-                                .PipeEqual => try self.writer.print("    orq %r10, %rax\n", .{}),
-                                .CaretEqual => try self.writer.print("    xorq %r10, %rax\n", .{}),
-                                .LessLessEqual => { try self.writer.print("    movq %r10, %rcx\n    shlq %cl, %rax\n", .{}); },
-                                .GreaterGreaterEqual => { try self.writer.print("    movq %r10, %rcx\n    sarq %cl, %rax\n", .{}); },
-                                else => unreachable,
+                            if (self.arch == .arm64) {
+                                try self.writer.print("    mov x1, x0\n", .{});
+                                try self.popTemp("x0"); // Old value
+                                switch (node.op.?) {
+                                    .PlusEqual => try self.writer.print("    add x0, x0, x1\n", .{}),
+                                    .MinusEqual => try self.writer.print("    sub x0, x0, x1\n", .{}),
+                                    .StarEqual => try self.writer.print("    mul x0, x0, x1\n", .{}),
+                                    .SlashEqual => try self.writer.print("    sdiv x0, x0, x1\n", .{}),
+                                    .PercentEqual => { try self.writer.print("    sdiv x2, x0, x1\n    msub x0, x2, x1, x0\n", .{}); },
+                                    .AmpersandEqual => try self.writer.print("    and x0, x0, x1\n", .{}),
+                                    .PipeEqual => try self.writer.print("    orr x0, x0, x1\n", .{}),
+                                    .CaretEqual => try self.writer.print("    eor x0, x0, x1\n", .{}),
+                                    .LessLessEqual => try self.writer.print("    lsl x0, x0, x1\n", .{}),
+                                    .GreaterGreaterEqual => try self.writer.print("    asr x0, x0, x1\n", .{}),
+                                    else => unreachable,
+                                }
+                                try self.popTemp("x1"); // Address
+                                switch (size) {
+                                    1 => try self.writer.print("    strb w0, [x1]\n", .{}),
+                                    4 => try self.writer.print("    str w0, [x1]\n", .{}),
+                                    else => try self.writer.print("    str x0, [x1]\n", .{}),
+                                }
+                            } else {
+                                try self.writer.print("    movq %rax, %r10\n", .{});
+                                try self.popTemp("%rax"); // Old value
+                                switch (node.op.?) {
+                                    .PlusEqual => try self.writer.print("    addq %r10, %rax\n", .{}),
+                                    .MinusEqual => try self.writer.print("    subq %r10, %rax\n", .{}),
+                                    .StarEqual => try self.writer.print("    imulq %r10, %rax\n", .{}),
+                                    .SlashEqual => { try self.writer.print("    cqo\n    idivq %r10\n", .{}); },
+                                    .PercentEqual => { try self.writer.print("    cqo\n    idivq %r10\n    movq %rdx, %rax\n", .{}); },
+                                    .AmpersandEqual => try self.writer.print("    andq %r10, %rax\n", .{}),
+                                    .PipeEqual => try self.writer.print("    orq %r10, %rax\n", .{}),
+                                    .CaretEqual => try self.writer.print("    xorq %r10, %rax\n", .{}),
+                                    .LessLessEqual => { try self.writer.print("    movq %r10, %rcx\n    shlq %cl, %rax\n", .{}); },
+                                    .GreaterGreaterEqual => { try self.writer.print("    movq %r10, %rcx\n    sarq %cl, %rax\n", .{}); },
+                                    else => unreachable,
+                                }
+                                try self.popTemp("%r10"); // Address
+                                switch (size) {
+                                    1 => try self.writer.print("    movb %al, (%r10)\n", .{}),
+                                    4 => try self.writer.print("    movl %eax, (%r10)\n", .{}),
+                                    else => try self.writer.print("    movq %rax, (%r10)\n", .{}),
+                                }
                             }
-                            try self.popTemp("%r10"); // Address
-                            try self.writer.print("    movq %rax, (%r10)\n", .{});
                         }
                     } else {
                         try self.genExpr(node.right.?);
-                        const dt = node.right.?.data_type;
+                        const info = self.resolveTypeInfo(node.left.?);
+                        const size = self.type_system.getTypeSize(info.dt, info.is_ptr, info.s_name);
+
                         if (self.arch == .arm64) {
                             try self.popTemp("x1");
-                            if (dt.isFloat()) {
-                                try self.writer.print("    str d0, [x1]\n", .{});
+                            if (info.dt.isFloat() and !info.is_ptr) {
+                                if (size == 4) {
+                                    try self.writer.print("    fcvt s0, d0\n", .{});
+                                    try self.writer.print("    str s0, [x1]\n", .{});
+                                }
+                                else { try self.writer.print("    str d0, [x1]\n", .{}); }
                             } else {
-                                try self.writer.print("    str x0, [x1]\n", .{});
+                                switch (size) {
+                                    1 => try self.writer.print("    strb w0, [x1]\n", .{}),
+                                    4 => try self.writer.print("    str w0, [x1]\n", .{}),
+                                    else => try self.writer.print("    str x0, [x1]\n", .{}),
+                                }
                             }
                         } else {
                             try self.popTemp("%r10");
-                            if (dt.isFloat()) {
-                                try self.writer.print("    movsd %xmm0, (%r10)\n", .{});
+                            if (info.dt.isFloat() and !info.is_ptr) {
+                                if (size == 4) {
+                                    try self.writer.print("    cvtsd2ss %xmm0, %xmm0\n", .{});
+                                    try self.writer.print("    movss %xmm0, (%r10)\n", .{});
+                                }
+                                else { try self.writer.print("    movsd %xmm0, (%r10)\n", .{}); }
                             } else {
-                                try self.writer.print("    movq %rax, (%r10)\n", .{});
+                                switch (size) {
+                                    1 => try self.writer.print("    movb %al, (%r10)\n", .{}),
+                                    4 => try self.writer.print("    movl %eax, (%r10)\n", .{}),
+                                    else => try self.writer.print("    movq %rax, (%r10)\n", .{}),
+                                }
                             }
                         }
                     }
@@ -555,7 +740,7 @@ pub const CodeGen = struct {
                         j -= 1;
                         if (self.arch == .arm64) {
                             if (is_printf and j > 0) {
-                                try self.emitLoad("x0", self.temp_stack_pos + 8);
+                                try self.emitLoad("x0", self.temp_stack_pos + 8, 8, false);
                                 try self.writer.print("    str x0, [sp, #-16]!\n", .{});
                                 self.temp_stack_pos += 8;
                             } else {
@@ -570,7 +755,7 @@ pub const CodeGen = struct {
                     }
                 }
                 if (self.vars.get(node.name.?)) |local| {
-                    try self.emitLoad(if (self.arch == .arm64) "x8" else "%r11", local.offset);
+                    try self.emitLoad(if (self.arch == .arm64) "x8" else "%r11", local.offset, 8, false);
                     if (self.arch == .arm64) {
                         try self.writer.print("    blr x8\n", .{});
                     } else {
@@ -874,27 +1059,62 @@ pub const CodeGen = struct {
                         try self.popTemp("x1");
                         if (unary_dt.isFloat()) {
                             self.has_floats = true;
-                            try self.writer.print("    ldr d0, [x1]\n", .{});
-                            try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
-                            if (node.op.? == .PlusPlus) { try self.writer.print("    fadd d0, d0, d1\n", .{}); } else { try self.writer.print("    fsub d0, d0, d1\n", .{}); }
-                            try self.writer.print("    str d0, [x1]\n", .{});
+                            const size = self.type_system.getTypeSize(unary_dt, false, null);
+                            if (size == 4) {
+                                try self.writer.print("    ldr s0, [x1]\n", .{});
+                                try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
+                                try self.writer.print("    fcvt s1, d1\n", .{});
+                                if (node.op.? == .PlusPlus) { try self.writer.print("    fadd s0, s0, s1\n", .{}); } else { try self.writer.print("    fsub s0, s0, s1\n", .{}); }
+                                try self.writer.print("    str s0, [x1]\n", .{});
+                            } else {
+                                try self.writer.print("    ldr d0, [x1]\n", .{});
+                                try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
+                                if (node.op.? == .PlusPlus) { try self.writer.print("    fadd d0, d0, d1\n", .{}); } else { try self.writer.print("    fsub d0, d0, d1\n", .{}); }
+                                try self.writer.print("    str d0, [x1]\n", .{});
+                            }
                         } else {
-                            try self.writer.print("    ldr x0, [x1]\n", .{});
+                            const int_size = self.type_system.getTypeSize(unary_dt, false, null);
+                            switch (int_size) {
+                                1 => try self.writer.print("    ldrsb x0, [x1]\n", .{}),
+                                4 => try self.writer.print("    ldrsw x0, [x1]\n", .{}),
+                                else => try self.writer.print("    ldr x0, [x1]\n", .{}),
+                            }
                             if (node.op.? == .PlusPlus) { try self.writer.print("    add x0, x0, #1\n", .{}); } else { try self.writer.print("    sub x0, x0, #1\n", .{}); }
-                            try self.writer.print("    str x0, [x1]\n", .{});
+                            switch (int_size) {
+                                1 => try self.writer.print("    strb w0, [x1]\n", .{}),
+                                4 => try self.writer.print("    str w0, [x1]\n", .{}),
+                                else => try self.writer.print("    str x0, [x1]\n", .{}),
+                            }
                         }
                     } else {
                         try self.popTemp("%r10");
                         if (unary_dt.isFloat()) {
                             self.has_floats = true;
-                            try self.writer.print("    movsd (%r10), %xmm0\n", .{});
-                            try self.writer.print("    movsd L_.float.constant_1(%rip), %xmm1\n", .{});
-                            if (node.op.? == .PlusPlus) { try self.writer.print("    addsd %xmm1, %xmm0\n", .{}); } else { try self.writer.print("    subsd %xmm1, %xmm0\n", .{}); }
-                            try self.writer.print("    movsd %xmm0, (%r10)\n", .{});
+                            const size = self.type_system.getTypeSize(unary_dt, false, null);
+                            if (size == 4) {
+                                try self.writer.print("    movss (%r10), %xmm0\n", .{});
+                                try self.writer.print("    cvtsd2ss L_.float.constant_1(%rip), %xmm1\n", .{});
+                                if (node.op.? == .PlusPlus) { try self.writer.print("    addss %xmm1, %xmm0\n", .{}); } else { try self.writer.print("    subss %xmm1, %xmm0\n", .{}); }
+                                try self.writer.print("    movss %xmm0, (%r10)\n", .{});
+                            } else {
+                                try self.writer.print("    movsd (%r10), %xmm0\n", .{});
+                                try self.writer.print("    movsd L_.float.constant_1(%rip), %xmm1\n", .{});
+                                if (node.op.? == .PlusPlus) { try self.writer.print("    addsd %xmm1, %xmm0\n", .{}); } else { try self.writer.print("    subsd %xmm1, %xmm0\n", .{}); }
+                                try self.writer.print("    movsd %xmm0, (%r10)\n", .{});
+                            }
                         } else {
-                            try self.writer.print("    movq (%r10), %rax\n", .{});
+                            const int_size_unary = self.type_system.getTypeSize(unary_dt, false, null);
+                            switch (int_size_unary) {
+                                1 => try self.writer.print("    movzbq (%r10), %rax\n", .{}),
+                                4 => try self.writer.print("    movslq (%r10), %rax\n", .{}),
+                                else => try self.writer.print("    movq (%r10), %rax\n", .{}),
+                            }
                             if (node.op.? == .PlusPlus) { try self.writer.print("    incq %rax\n", .{}); } else { try self.writer.print("    decq %rax\n", .{}); }
-                            try self.writer.print("    movq %rax, (%r10)\n", .{});
+                            switch (int_size_unary) {
+                                1 => try self.writer.print("    movb %al, (%r10)\n", .{}),
+                                4 => try self.writer.print("    movl %eax, (%r10)\n", .{}),
+                                else => try self.writer.print("    movq %rax, (%r10)\n", .{}),
+                            }
                         }
                     }
                 } else {
@@ -925,31 +1145,68 @@ pub const CodeGen = struct {
                     try self.popTemp("x1");
                     if (postfix_dt.isFloat()) {
                         self.has_floats = true;
-                        try self.writer.print("    ldr d0, [x1]\n", .{});
-                        try self.writer.print("    fmov d2, d0\n", .{});
-                        try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
-                        if (node.op.? == .PlusPlus) { try self.writer.print("    fadd d2, d2, d1\n", .{}); } else { try self.writer.print("    fsub d2, d2, d1\n", .{}); }
-                        try self.writer.print("    str d2, [x1]\n", .{});
+                        const size = self.type_system.getTypeSize(postfix_dt, false, null);
+                        if (size == 4) {
+                            try self.writer.print("    ldr s0, [x1]\n", .{});
+                            try self.writer.print("    fmov s2, s0\n", .{});
+                            try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
+                            try self.writer.print("    fcvt s1, d1\n", .{});
+                            if (node.op.? == .PlusPlus) { try self.writer.print("    fadd s2, s2, s1\n", .{}); } else { try self.writer.print("    fsub s2, s2, s1\n", .{}); }
+                            try self.writer.print("    str s2, [x1]\n", .{});
+                        } else {
+                            try self.writer.print("    ldr d0, [x1]\n", .{});
+                            try self.writer.print("    fmov d2, d0\n", .{});
+                            try self.writer.print("    adrp x8, L_.float.constant_1@PAGE\n    ldr d1, [x8, L_.float.constant_1@PAGEOFF]\n", .{});
+                            if (node.op.? == .PlusPlus) { try self.writer.print("    fadd d2, d2, d1\n", .{}); } else { try self.writer.print("    fsub d2, d2, d1\n", .{}); }
+                            try self.writer.print("    str d2, [x1]\n", .{});
+                        }
                     } else {
-                        try self.writer.print("    ldr x0, [x1]\n", .{});
+                        const int_size_post = self.type_system.getTypeSize(postfix_dt, false, null);
+                        switch (int_size_post) {
+                            1 => try self.writer.print("    ldrsb x0, [x1]\n", .{}),
+                            4 => try self.writer.print("    ldrsw x0, [x1]\n", .{}),
+                            else => try self.writer.print("    ldr x0, [x1]\n", .{}),
+                        }
                         try self.writer.print("    mov x2, x0\n", .{});
                         if (node.op.? == .PlusPlus) { try self.writer.print("    add x2, x2, #1\n", .{}); } else { try self.writer.print("    sub x2, x2, #1\n", .{}); }
-                        try self.writer.print("    str x2, [x1]\n", .{});
+                        switch (int_size_post) {
+                            1 => try self.writer.print("    strb w2, [x1]\n", .{}),
+                            4 => try self.writer.print("    str w2, [x1]\n", .{}),
+                            else => try self.writer.print("    str x2, [x1]\n", .{}),
+                        }
                     }
                 } else {
                     try self.popTemp("%r10");
                     if (postfix_dt.isFloat()) {
                         self.has_floats = true;
-                        try self.writer.print("    movsd (%r10), %xmm0\n", .{});
-                        try self.writer.print("    movsd %xmm0, %xmm2\n", .{});
-                        try self.writer.print("    movsd L_.float.constant_1(%rip), %xmm1\n", .{});
-                        if (node.op.? == .PlusPlus) { try self.writer.print("    addsd %xmm1, %xmm2\n", .{}); } else { try self.writer.print("    subsd %xmm1, %xmm2\n", .{}); }
-                        try self.writer.print("    movsd %xmm2, (%r10)\n", .{});
+                        const size = self.type_system.getTypeSize(postfix_dt, false, null);
+                        if (size == 4) {
+                            try self.writer.print("    movss (%r10), %xmm0\n", .{});
+                            try self.writer.print("    movaps %xmm0, %xmm2\n", .{});
+                            try self.writer.print("    cvtsd2ss L_.float.constant_1(%rip), %xmm1\n", .{});
+                            if (node.op.? == .PlusPlus) { try self.writer.print("    addss %xmm1, %xmm2\n", .{}); } else { try self.writer.print("    subss %xmm1, %xmm2\n", .{}); }
+                            try self.writer.print("    movss %xmm2, (%r10)\n", .{});
+                        } else {
+                            try self.writer.print("    movsd (%r10), %xmm0\n", .{});
+                            try self.writer.print("    movaps %xmm0, %xmm2\n", .{});
+                            try self.writer.print("    movsd L_.float.constant_1(%rip), %xmm1\n", .{});
+                            if (node.op.? == .PlusPlus) { try self.writer.print("    addsd %xmm1, %xmm2\n", .{}); } else { try self.writer.print("    subsd %xmm1, %xmm2\n", .{}); }
+                            try self.writer.print("    movsd %xmm2, (%r10)\n", .{});
+                        }
                     } else {
-                        try self.writer.print("    movq (%r10), %rax\n", .{});
+                        const int_size_post = self.type_system.getTypeSize(postfix_dt, false, null);
+                        switch (int_size_post) {
+                            1 => try self.writer.print("    movzbq (%r10), %rax\n", .{}),
+                            4 => try self.writer.print("    movslq (%r10), %rax\n", .{}),
+                            else => try self.writer.print("    movq (%r10), %rax\n", .{}),
+                        }
                         try self.writer.print("    movq %rax, %r11\n", .{});
                         if (node.op.? == .PlusPlus) { try self.writer.print("    incq %r11\n", .{}); } else { try self.writer.print("    decq %r11\n", .{}); }
-                        try self.writer.print("    movq %r11, (%r10)\n", .{});
+                        switch (int_size_post) {
+                            1 => try self.writer.print("    movb %r11b, (%r10)\n", .{}),
+                            4 => try self.writer.print("    movl %r11d, (%r10)\n", .{}),
+                            else => try self.writer.print("    movq %r11, (%r10)\n", .{}),
+                        }
                     }
                 }
             },
@@ -967,7 +1224,7 @@ pub const CodeGen = struct {
                 if (node.right) |right| {
                     try self.genExpr(right);
                     const local = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
-                    try self.emitStore(self.getReg(node.data_type, 0), local.offset);
+                    try self.emitStore(self.getReg(node.data_type, 0), local.offset, size, node.data_type.isFloat() and !node.is_pointer);
                 } else {
                     _ = try self.registerVar(node.name.?, size, node.data_type, node.is_pointer, false, node.pointer_level, node.struct_name);
                 }
@@ -1148,13 +1405,12 @@ pub const CodeGen = struct {
                 const size = self.type_system.getTypeSize(param_type, is_ptr, s_name);
                 const p_level = if (node.params_pointer_levels) |pls| pls[idx] else (if (is_ptr) @as(usize, 1) else 0);
                 const local = try self.registerVar(param, size, param_type, is_ptr, false, p_level, s_name);
-                if (self.arch == .arm64) {
-                    try self.writer.print("    str x{}, [x29, #{}]\n", .{idx, local.offset});
-                } else {
-                    const arg_regs = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
-                    if (idx < 6) {
-                        try self.writer.print("    movq {s}, {}(%rbp)\n", .{arg_regs[idx], local.offset});
-                    }
+                const arg_regs_x86 = [_][]const u8{ "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
+                var arg_buf_arm: [16]u8 = undefined;
+                const reg = if (self.arch == .arm64) std.fmt.bufPrint(&arg_buf_arm, "x{}", .{idx}) catch "x0" else (if (idx < 6) arg_regs_x86[idx] else "");
+                if (reg.len > 0) {
+                    // Parameters are currently passed in integer registers even if they are floats.
+                    try self.emitStore(reg, local.offset, size, false);
                 }
             }
         }
@@ -1221,10 +1477,20 @@ pub const CodeGen = struct {
             while (it.next()) |entry| {
                 const name = entry.key_ptr.*;
                 const g = entry.value_ptr.*;
+                const log2_align = if (g.size >= 8) @as(u32, 3) else if (g.size >= 4) @as(u32, 2) else if (g.size >= 2) @as(u32, 1) else @as(u32, 0);
                 if (g.init_value) |val| {
-                    try self.writer.print(".section __DATA,__data\n.globl _{s}\n.p2align 3\n_{s}:\n    .quad {}\n", .{name, name, val});
+                    try self.writer.print(".section __DATA,__data\n.globl _{s}\n.p2align {}\n_{s}:\n", .{name, log2_align, name});
+                    if (g.size == 1) {
+                        try self.writer.print("    .byte {}\n", .{val});
+                    } else if (g.size == 2) {
+                        try self.writer.print("    .short {}\n", .{val});
+                    } else if (g.size == 4) {
+                        try self.writer.print("    .long {}\n", .{val});
+                    } else {
+                        try self.writer.print("    .quad {}\n", .{val});
+                    }
                 } else {
-                    try self.writer.print(".comm _{s}, {}, 3\n", .{name, g.size});
+                    try self.writer.print(".comm _{s}, {}, {}\n", .{name, g.size, log2_align});
                 }
             }
         }

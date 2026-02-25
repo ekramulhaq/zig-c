@@ -1,0 +1,528 @@
+/*
+  simpledb.simple -- Mini RDBMS for the zig-c compiler.
+  C standard types: char=1 byte, int=4 bytes, ptr=8 bytes.
+
+  Strings are stored in flat char arrays.
+  Row i name  starts at: g_name[i * NAME_LEN]
+  Row i email starts at: g_email[i * EMAIL_LEN]
+  Use row_name(i) / row_email(i) to get the char pointer.
+
+  SQL supported:
+    INSERT INTO users VALUES (id, name, email);
+    SELECT * FROM users;
+    SELECT * FROM users WHERE id = N;
+    DELETE FROM users WHERE id = N;
+    COUNT
+    .help | .exit
+
+  Build:
+    cd path-to-zig-c
+    zig build
+    bash db/run.sh --build
+    ./db/simpledb
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "posix.h"
+
+/* constants */
+#define MAX_ROWS    200
+#define NAME_LEN     32
+#define EMAIL_LEN    64
+#define INPUT_MAX   256
+
+/* flat storage -- avoids 2D arrays and struct member array issues */
+int  g_id[MAX_ROWS];
+char g_name[6400];    /* 200 * 32 */
+char g_email[12800];  /* 200 * 64 */
+int  g_active[MAX_ROWS];
+
+int g_num_rows = 0;
+int g_db_fd    = -1;
+int g_dirty    = 0;
+
+char g_in[256];
+
+char tok0[64];
+char tok1[64];
+char tok2[64];
+char tok3[64];
+char tok4[64];
+char tok5[64];
+char tok6[64];
+char tok7[64];
+
+/* pointer to row i name slot */
+char *row_name(int i) {
+    int off = i * NAME_LEN;
+    return &g_name[off];
+}
+
+/* pointer to row i email slot */
+char *row_email(int i) {
+    int off = i * EMAIL_LEN;
+    return &g_email[off];
+}
+
+/* string helpers */
+
+int ch_lower(int c) {
+    if (c >= 65 && c <= 90) return c + 32;
+    return c;
+}
+
+int db_strlen(char *s) {
+    int i = 0;
+    while (s[i] != 0) {
+        i = i + 1;
+    }
+    return i;
+}
+
+int db_eq(char *a, char *b) {
+    int i = 0;
+    while (a[i] != 0 && b[i] != 0) {
+        if (a[i] != b[i]) return 0;
+        i = i + 1;
+    }
+    if (a[i] == 0 && b[i] == 0) return 1;
+    return 0;
+}
+
+void db_strcpy(char *dst, char *src, int max) {
+    int i = 0;
+    while (i < max - 1 && src[i] != 0) {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+    dst[i] = 0;
+}
+
+int db_itoa(int n, char *buf) {
+    if (n == 0) { buf[0] = 48; buf[1] = 0; return 1; }
+    int neg = 0;
+    if (n < 0) { neg = 1; n = -n; }
+    char tmp[24];
+    int len = 0;
+    while (n > 0) {
+        tmp[len] = 48 + (n % 10);
+        n = n / 10;
+        len = len + 1;
+    }
+    int start = 0;
+    if (neg) { buf[0] = 45; start = 1; }
+    int i = 0;
+    while (i < len) {
+        buf[start + i] = tmp[len - 1 - i];
+        i = i + 1;
+    }
+    buf[start + len] = 0;
+    return start + len;
+}
+
+int db_atoi(char *s) {
+    int neg = 0;
+    int i   = 0;
+    int val = 0;
+    if (s[0] == 45) { neg = 1; i = 1; }
+    while (s[i] >= 48 && s[i] <= 57) {
+        val = val * 10 + (s[i] - 48);
+        i = i + 1;
+    }
+    if (neg) return -val;
+    return val;
+}
+
+void db_print(char *s) {
+    int i = 0;
+    while (s[i] != 0) {
+        putchar(s[i]);
+        i = i + 1;
+    }
+}
+
+void db_print_w(char *s, int w) {
+    int len = db_strlen(s);
+    int i = 0;
+    while (i < w) {
+        if (i < len) putchar(s[i]);
+        else putchar(32);
+        i = i + 1;
+    }
+}
+
+/* keyword matchers -- case-insensitive */
+
+int kw_insert(char *t) {
+    return ch_lower(t[0])=='i' && ch_lower(t[1])=='n' && ch_lower(t[2])=='s'
+        && ch_lower(t[3])=='e' && ch_lower(t[4])=='r' && ch_lower(t[5])=='t'
+        && t[6]==0;
+}
+
+int kw_select(char *t) {
+    return ch_lower(t[0])=='s' && ch_lower(t[1])=='e' && ch_lower(t[2])=='l'
+        && ch_lower(t[3])=='e' && ch_lower(t[4])=='c' && ch_lower(t[5])=='t'
+        && t[6]==0;
+}
+
+int kw_delete(char *t) {
+    return ch_lower(t[0])=='d' && ch_lower(t[1])=='e' && ch_lower(t[2])=='l'
+        && ch_lower(t[3])=='e' && ch_lower(t[4])=='t' && ch_lower(t[5])=='e'
+        && t[6]==0;
+}
+
+int kw_where(char *t) {
+    return ch_lower(t[0])=='w' && ch_lower(t[1])=='h' && ch_lower(t[2])=='e'
+        && ch_lower(t[3])=='r' && ch_lower(t[4])=='e' && t[5]==0;
+}
+
+int kw_count(char *t) {
+    return ch_lower(t[0])=='c' && ch_lower(t[1])=='o' && ch_lower(t[2])=='u'
+        && ch_lower(t[3])=='n' && ch_lower(t[4])=='t' && t[5]==0;
+}
+
+/* .exit  ASCII: 46 101 120 105 116 */
+int kw_dot_exit(char *t) {
+    return t[0]==46 && t[1]==101 && t[2]==120 && t[3]==105 && t[4]==116 && t[5]==0;
+}
+
+/* .help  ASCII: 46 104 101 108 112 */
+int kw_dot_help(char *t) {
+    return t[0]==46 && t[1]==104 && t[2]==101 && t[3]==108 && t[4]==112 && t[5]==0;
+}
+
+/* input reading */
+
+int read_line() {
+    int i = 0;
+    int c;
+    while (i < INPUT_MAX - 1) {
+        c = getchar();
+        if (c == -1) {
+            g_in[i] = 0;
+            if (i == 0) return 0;
+            return 1;
+        }
+        if (c == 10) break;
+        if (c == 13) continue;
+        g_in[i] = c;
+        i = i + 1;
+    }
+    g_in[i] = 0;
+    return 1;
+}
+
+int is_delim(int c) {
+    if (c == 32 || c == 9)  return 1;
+    if (c == 44 || c == 59) return 1;
+    if (c == 40 || c == 41) return 1;
+    if (c == 39 || c == 34) return 1;
+    return 0;
+}
+
+int next_tok(int pos, char *out, int max) {
+    while (g_in[pos] != 0 && is_delim(g_in[pos])) {
+        pos = pos + 1;
+    }
+    int i = 0;
+    while (g_in[pos] != 0 && !is_delim(g_in[pos]) && i < max - 1) {
+        out[i] = g_in[pos];
+        pos = pos + 1;
+        i = i + 1;
+    }
+    out[i] = 0;
+    return pos;
+}
+
+/* persistence */
+
+void write_row(int i) {
+    write(g_db_fd, (void *)(&g_id[i]),     4);
+    write(g_db_fd, (void *)(row_name(i)),  NAME_LEN);
+    write(g_db_fd, (void *)(row_email(i)), EMAIL_LEN);
+    write(g_db_fd, (void *)(&g_active[i]), 4);
+}
+
+void read_row(int i) {
+    read(g_db_fd, (void *)(&g_id[i]),     4);
+    read(g_db_fd, (void *)(row_name(i)),  NAME_LEN);
+    read(g_db_fd, (void *)(row_email(i)), EMAIL_LEN);
+    read(g_db_fd, (void *)(&g_active[i]), 4);
+}
+
+void db_open() {
+    /* Try to open existing file first (read+write, no create) */
+    g_db_fd = open("simpledb.dat", O_RDWR_ONLY, 0);
+    if (g_db_fd >= 0) {
+        /* File exists -- load header and rows */
+        int hdr = 0;
+        int nr  = read(g_db_fd, (void *)(&hdr), 4);
+        if (nr == 4 && hdr > 0 && hdr <= MAX_ROWS) {
+            g_num_rows = hdr;
+            int i = 0;
+            while (i < g_num_rows) {
+                read_row(i);
+                i = i + 1;
+            }
+            printf("[info] Loaded %d row(s) from simpledb.dat\n", g_num_rows);
+        }
+        return;
+    }
+    /* File does not exist -- create it */
+    g_db_fd = open("simpledb.dat", O_RDWR_CREAT_TRUNC, MODE_0644);
+    if (g_db_fd < 0) {
+        printf("[warn] Cannot open simpledb.dat - running in-memory.\n");
+        return;
+    }
+    /* Fix permissions: some systems apply umask unexpectedly */
+    fchmod(g_db_fd, MODE_0644);
+}
+
+void db_flush() {
+    if (g_db_fd < 0) return;
+    lseek(g_db_fd, 0, SEEK_SET);
+    write(g_db_fd, (void *)(&g_num_rows), 4);
+    int i = 0;
+    while (i < g_num_rows) {
+        write_row(i);
+        i = i + 1;
+    }
+    g_dirty = 0;
+}
+
+void db_close() {
+    if (g_dirty) db_flush();
+    if (g_db_fd >= 0) {
+        close(g_db_fd);
+        g_db_fd = -1;
+    }
+}
+
+/* table helpers */
+
+int find_by_id(int target) {
+    int i = 0;
+    while (i < g_num_rows) {
+        if (g_active[i] == 1 && g_id[i] == target) return i;
+        i = i + 1;
+    }
+    return -1;
+}
+
+int count_active() {
+    int cnt = 0;
+    int i   = 0;
+    while (i < g_num_rows) {
+        if (g_active[i] == 1) cnt = cnt + 1;
+        i = i + 1;
+    }
+    return cnt;
+}
+
+/* output formatting */
+
+void print_sep() {
+    printf("+------+-----------------+-------------------------+\n");
+}
+
+void print_hdr() {
+    print_sep();
+    printf("| ID   | Name            | Email                   |\n");
+    print_sep();
+}
+
+void print_row_at(int i) {
+    printf("| %4d | ", g_id[i]);
+    db_print_w(row_name(i),  15);
+    printf(" | ");
+    db_print_w(row_email(i), 23);
+    printf(" |\n");
+}
+
+/* command executors */
+
+void exec_insert(char *tid, char *tname, char *temail) {
+    if (g_num_rows >= MAX_ROWS) {
+        printf("Error: table is full (max %d rows).\n", MAX_ROWS);
+        return;
+    }
+    int new_id = db_atoi(tid);
+    if (new_id <= 0) {
+        printf("Error: id must be a positive integer.\n");
+        return;
+    }
+    if (find_by_id(new_id) >= 0) {
+        printf("Error: duplicate id=%d.\n", new_id);
+        return;
+    }
+    int idx = g_num_rows;
+    g_id[idx]     = new_id;
+    g_active[idx] = 1;
+    db_strcpy(row_name(idx),  tname,  NAME_LEN);
+    db_strcpy(row_email(idx), temail, EMAIL_LEN);
+    g_num_rows = g_num_rows + 1;
+    g_dirty    = 1;
+    printf("Inserted: id=%d name=", new_id);
+    db_print(tname);
+    printf(" email=");
+    db_print(temail);
+    printf("\n");
+}
+
+void exec_select_all() {
+    int found = 0;
+    int i     = 0;
+    print_hdr();
+    while (i < g_num_rows) {
+        if (g_active[i] == 1) {
+            print_row_at(i);
+            found = found + 1;
+        }
+        i = i + 1;
+    }
+    print_sep();
+    printf("%d row(s) returned.\n", found);
+}
+
+void exec_select_where(int target) {
+    int idx = find_by_id(target);
+    if (idx < 0) {
+        printf("No row found with id=%d.\n", target);
+        return;
+    }
+    print_hdr();
+    print_row_at(idx);
+    print_sep();
+    printf("1 row(s) returned.\n");
+}
+
+void exec_delete(int target) {
+    int idx = find_by_id(target);
+    if (idx < 0) {
+        printf("No row found with id=%d.\n", target);
+        return;
+    }
+    g_active[idx] = 0;
+    g_dirty = 1;
+    printf("Deleted row id=%d.\n", target);
+}
+
+void exec_count() {
+    printf("COUNT(*) = %d\n", count_active());
+}
+
+void exec_help() {
+    printf("\n");
+    printf("  SimpleDB v1.1 -- Mini RDBMS (zig-c, C standard types)\n");
+    printf("  -------------------------------------------------------\n");
+    printf("  INSERT INTO users VALUES (id, name, email);\n");
+    printf("  SELECT * FROM users;\n");
+    printf("  SELECT * FROM users WHERE id = N;\n");
+    printf("  DELETE FROM users WHERE id = N;\n");
+    printf("  COUNT\n");
+    printf("  .help  show this message\n");
+    printf("  .exit  save and quit\n");
+    printf("  -------------------------------------------------------\n");
+    printf("  Notes: names max 31 chars, emails max 63 chars.\n\n");
+}
+
+/* command parser */
+
+void parse_and_exec() {
+    int pos = 0;
+
+    pos = next_tok(pos, tok0, 64);
+    if (tok0[0] == 0) return;
+
+    if (kw_dot_exit(tok0)) {
+        db_close();
+        printf("Goodbye!\n");
+        exit(0);
+    }
+
+    if (kw_dot_help(tok0)) {
+        exec_help();
+        return;
+    }
+
+    if (kw_insert(tok0)) {
+        pos = next_tok(pos, tok1, 64);
+        pos = next_tok(pos, tok2, 64);
+        pos = next_tok(pos, tok3, 64);
+        pos = next_tok(pos, tok4, 64);
+        pos = next_tok(pos, tok5, 64);
+        pos = next_tok(pos, tok6, 64);
+        if (tok4[0] == 0 || tok5[0] == 0 || tok6[0] == 0) {
+            printf("Syntax: INSERT INTO users VALUES (id, name, email);\n");
+            return;
+        }
+        exec_insert(tok4, tok5, tok6);
+        return;
+    }
+
+    if (kw_select(tok0)) {
+        pos = next_tok(pos, tok1, 64);
+        pos = next_tok(pos, tok2, 64);
+        pos = next_tok(pos, tok3, 64);
+        pos = next_tok(pos, tok4, 64);
+        if (tok4[0] == 0 || !kw_where(tok4)) {
+            exec_select_all();
+            return;
+        }
+        pos = next_tok(pos, tok5, 64);
+        pos = next_tok(pos, tok6, 64);
+        pos = next_tok(pos, tok7, 64);
+        if (tok7[0] == 0) {
+            printf("Syntax: SELECT * FROM users WHERE id = N;\n");
+            return;
+        }
+        exec_select_where(db_atoi(tok7));
+        return;
+    }
+
+    if (kw_delete(tok0)) {
+        pos = next_tok(pos, tok1, 64);
+        pos = next_tok(pos, tok2, 64);
+        pos = next_tok(pos, tok3, 64);
+        pos = next_tok(pos, tok4, 64);
+        pos = next_tok(pos, tok5, 64);
+        pos = next_tok(pos, tok6, 64);
+        if (tok6[0] == 0) {
+            printf("Syntax: DELETE FROM users WHERE id = N;\n");
+            return;
+        }
+        exec_delete(db_atoi(tok6));
+        return;
+    }
+
+    if (kw_count(tok0)) {
+        exec_count();
+        return;
+    }
+
+    printf("Unknown command. Type .help for usage.\n");
+}
+
+/* main REPL */
+
+int main() {
+    printf("  SimpleDB v1.1 (zig-c) -- char=1byte int=4byte\n");
+    printf("  Type .help for commands, .exit to quit.\n\n");
+
+    db_open();
+
+    while (1) {
+        printf("simpledb> ");
+        int ok = read_line();
+        if (!ok) {
+            db_flush();
+            printf("\n[EOF]\n");
+            break;
+        }
+        parse_and_exec();
+    }
+
+    db_close();
+    return 0;
+}
