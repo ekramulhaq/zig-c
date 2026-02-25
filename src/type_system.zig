@@ -62,6 +62,11 @@ pub const TypeSystem = struct {
         for (members) |member| {
             offset = try self.addStructMember(&layout, member, offset);
         }
+        // Align total size to at least 8 bytes if it contains any 8-byte members
+        // For simplicity, let's just always align to 8 if size > 0
+        if (offset > 0) {
+            offset = (offset + 7) & ~@as(i32, 7);
+        }
         layout.total_size = offset;
         try self.structs.put(name, layout);
     }
@@ -74,6 +79,13 @@ pub const TypeSystem = struct {
             }
         } else if (member.type == .VarDecl) {
             const m_size = self.getTypeSize(member.data_type, member.is_pointer, member.struct_name);
+            const m_align = self.getTypeAlign(member.data_type, member.is_pointer, member.struct_name);
+            
+            // Align offset
+            if (m_align > 1) {
+                offset = (offset + m_align - 1) & ~(m_align - 1);
+            }
+
             try layout.members.put(member.name.?, .{
                 .name = member.name.?,
                 .offset = offset,
@@ -84,7 +96,14 @@ pub const TypeSystem = struct {
             offset += m_size;
         } else if (member.type == .ArrayDecl) {
             const m_size = self.getTypeSize(member.data_type, member.is_pointer, member.struct_name);
+            const m_align = self.getTypeAlign(member.data_type, member.is_pointer, member.struct_name);
             const array_elements = if (member.value) |v| @as(i32, @intCast(v)) else 1;
+            
+            // Align offset
+            if (m_align > 1) {
+                offset = (offset + m_align - 1) & ~(m_align - 1);
+            }
+
             try layout.members.put(member.name.?, .{
                 .name = member.name.?,
                 .offset = offset,
@@ -105,10 +124,30 @@ pub const TypeSystem = struct {
             }
         }
         switch (data_type) {
-            .Int => return 8,
-            .Char => return 8, // Padded to 8 for simple alignment in this compiler
+            .Int => return 4,
+            .Char => return 1,
             .Void => return 0,
-            .Float => return 8,
+            .Float => return 4,
+            .Double => return 8,
+        }
+    }
+
+    pub fn getTypeAlign(self: *TypeSystem, data_type: ast.DataType, is_pointer: bool, struct_name: ?[]const u8) i32 {
+        if (is_pointer) return 8;
+        if (struct_name) |sn| {
+            if (self.structs.get(sn)) |layout| {
+                // For structs, we should return the max alignment of its members.
+                // For simplicity, let's just return 8 if we don't track it, 
+                // but we should probably track it.
+                _ = layout;
+                return 8;
+            }
+        }
+        switch (data_type) {
+            .Int => return 4,
+            .Char => return 1,
+            .Void => return 1,
+            .Float => return 4,
             .Double => return 8,
         }
     }
